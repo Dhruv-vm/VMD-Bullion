@@ -40,43 +40,86 @@ export function openBullionEventStream(
   }
 
   let closed = false;
-  const es = new EventSource(apiUrl("/api/bullion/stream"));
+  let es: EventSource | null = null;
+  let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  let lastActivity = Date.now();
 
-  es.addEventListener("snapshot", (ev: MessageEvent) => {
+  const connect = () => {
     if (closed) return;
+    if (es) {
+      try {
+        es.close();
+      } catch {
+        // ignore
+      }
+    }
+
     try {
-      const parsed = JSON.parse(ev.data);
-      onSnapshot(parsed);
-      onStatus({ connected: true, degraded: false });
+      es = new EventSource(apiUrl("/api/bullion/stream"));
+      lastActivity = Date.now();
+
+      es.addEventListener("snapshot", (ev: MessageEvent) => {
+        if (closed) return;
+        lastActivity = Date.now();
+        try {
+          const parsed = JSON.parse(ev.data);
+          onSnapshot(parsed);
+          onStatus({ connected: true, degraded: false });
+        } catch {
+          // Ignore malformed frame
+        }
+      });
+
+      es.addEventListener("heartbeat", () => {
+        if (!closed) {
+          lastActivity = Date.now();
+          onStatus({ connected: true, degraded: false });
+        }
+      });
+
+      es.addEventListener("status", (ev: MessageEvent) => {
+        if (closed) return;
+        lastActivity = Date.now();
+        try {
+          const parsed = JSON.parse(ev.data);
+          onStatus({ connected: true, degraded: parsed.status === "DEGRADED", message: parsed.error });
+        } catch {
+          onStatus({ connected: true, degraded: true });
+        }
+      });
+
+      es.onerror = () => {
+        if (!closed) {
+          onStatus({ connected: false, degraded: true, message: "SSE reconnecting..." });
+        }
+      };
     } catch {
-      // Ignore malformed frame
-    }
-  });
-
-  es.addEventListener("heartbeat", () => {
-    if (!closed) {
-      onStatus({ connected: true, degraded: false });
-    }
-  });
-
-  es.addEventListener("status", (ev: MessageEvent) => {
-    if (closed) return;
-    try {
-      const parsed = JSON.parse(ev.data);
-      onStatus({ connected: true, degraded: parsed.status === "DEGRADED", message: parsed.error });
-    } catch {
-      onStatus({ connected: true, degraded: true });
-    }
-  });
-
-  es.onerror = () => {
-    if (!closed) {
-      onStatus({ connected: false, degraded: true, message: "SSE reconnecting..." });
+      if (!closed) {
+        onStatus({ connected: false, degraded: true, message: "Failed to open EventSource" });
+      }
     }
   };
 
+  connect();
+
+  // Watchdog timer: If no events received for >35s (2 missed heartbeats), force reconnect
+  watchdogTimer = setInterval(() => {
+    if (closed) return;
+    if (Date.now() - lastActivity > 35000) {
+      onStatus({ connected: false, degraded: true, message: "SSE heartbeat timeout, reconnecting..." });
+      connect();
+    }
+  }, 10000);
+
   return () => {
     closed = true;
-    es.close();
+    if (watchdogTimer) clearInterval(watchdogTimer);
+    if (es) {
+      try {
+        es.close();
+      } catch {
+        // ignore
+      }
+    }
   };
 }

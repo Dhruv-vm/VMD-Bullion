@@ -114,6 +114,7 @@ interface BullionSummaryResponse {
 
 interface HistoryRecordItem {
   id: number | string;
+  city_code?: string;
   product_id: string;
   price: number;
   observed_at: string;
@@ -169,11 +170,27 @@ interface NewsItem {
 }
 
 interface LiveNewsSignal {
-  net_sentiment_score: number;
-  overall_signal: string;
-  total_articles: number;
+  net_sentiment_score?: number;
+  overall_signal?: string;
+  total_articles?: number;
   driver_distribution?: Record<string, number>;
-  top_drivers?: Array<{ driver: string; count: number; sentiment: number }>;
+  top_drivers?: Array<{ driver: string; count: number; sentiment?: number }>;
+  status?: string;
+  is_sufficient?: boolean;
+  window_hours?: number;
+  evaluated_at?: string;
+  total_fresh_scanned?: number;
+  distinct_clusters_count?: number;
+  relevant_fresh_count?: number;
+  message?: string;
+  net_signal?: string;
+  net_confidence?: string;
+  bullish_weight?: number;
+  bearish_weight?: number;
+  mixed_weight?: number;
+  market_vs_news_alignment?: string;
+  driver_breakdown?: Record<string, number>;
+  directional_breakdown?: Record<string, number>;
 }
 
 interface PortfolioSummary {
@@ -322,8 +339,13 @@ export default function VMDBullionDashboard() {
     if (Array.isArray(dash.city_rates)) setCityRates(dash.city_rates as CityRateItem[]);
     if (dash.comparison) setCityComparison(dash.comparison as BullionComparisonResponse);
     if (dash.monitor) setMonitorStatus(dash.monitor as DataMonitorStatus);
-    if (Array.isArray(dash.history)) setHistoryRecords(dash.history as HistoryRecordItem[]);
-  }, []);
+    if (Array.isArray(dash.history)) {
+      const hist = dash.history as HistoryRecordItem[];
+      if (hist.length === 0 || hist[0].city_code === selectedCity) {
+        setHistoryRecords(hist);
+      }
+    }
+  }, [selectedCity]);
 
   const fetchBullionData = useCallback(async () => {
     try {
@@ -390,6 +412,15 @@ export default function VMDBullionDashboard() {
     );
     return () => closeStream();
   }, [applyDashboardPayload]);
+
+  // Robust live polling fallback: polls every 5s if SSE is disconnected, or every 30s as heartbeat safety sync
+  useEffect(() => {
+    const intervalMs = streamStatus.connected ? 30000 : 5000;
+    const timer = setInterval(() => {
+      void fetchBullionData();
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [streamStatus.connected, fetchBullionData]);
 
   useEffect(() => {
     let active = true;
@@ -1096,54 +1127,74 @@ export default function VMDBullionDashboard() {
                       </button>
                     </div>
 
-                    {liveNewsSignal ? (
-                      <div className="space-y-3 font-mono text-xs">
-                        <div className="flex items-center justify-between p-3 rounded bg-[#0D1218] border border-[#25313D]">
-                          <div>
-                            <span className="text-[#8B98A5] block text-[10px]">NET SENTIMENT SCORE</span>
-                            <span
-                              className={`text-lg font-bold ${
-                                liveNewsSignal.net_sentiment_score >= 0.1
-                                  ? "text-emerald-400"
-                                  : liveNewsSignal.net_sentiment_score <= -0.1
-                                  ? "text-rose-400"
-                                  : "text-zinc-400"
-                              }`}
-                            >
-                              {liveNewsSignal.net_sentiment_score > 0 ? "+" : ""}
-                              {liveNewsSignal.net_sentiment_score.toFixed(3)}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-[#8B98A5] block text-[10px]">VERIFIED ARTICLES</span>
-                            <span className="text-lg font-bold text-white">
-                              {liveNewsSignal.total_articles}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-[#8B98A5] block text-[10px]">SIGNAL REGIME</span>
-                            <span className="text-xs font-bold px-2 py-0.5 rounded bg-zinc-800 text-[#D6A84F]">
-                              {liveNewsSignal.overall_signal}
-                            </span>
-                          </div>
-                        </div>
+                    {liveNewsSignal ? (() => {
+                      const netScore = liveNewsSignal.net_sentiment_score ??
+                        ((liveNewsSignal.bullish_weight ?? 0) - (liveNewsSignal.bearish_weight ?? 0));
+                      const totalCount = liveNewsSignal.total_articles ??
+                        liveNewsSignal.relevant_fresh_count ??
+                        liveNewsSignal.total_fresh_scanned ??
+                        0;
+                      const regime = liveNewsSignal.overall_signal ??
+                        liveNewsSignal.net_signal ??
+                        "UNCERTAIN";
+                      const drivers = liveNewsSignal.top_drivers ??
+                        (liveNewsSignal.driver_breakdown
+                          ? Object.entries(liveNewsSignal.driver_breakdown).map(([driver, count]) => ({ driver, count }))
+                          : []);
 
-                        {/* Top Drivers */}
-                        <div className="space-y-1.5 pt-1">
-                          <span className="text-[11px] text-[#8B98A5] block">DOMINANT MACRO DRIVERS:</span>
-                          <div className="flex flex-wrap gap-2">
-                            {liveNewsSignal.top_drivers?.slice(0, 4).map((d) => (
+                      return (
+                        <div className="space-y-3 font-mono text-xs">
+                          <div className="flex items-center justify-between p-3 rounded bg-[#0D1218] border border-[#25313D]">
+                            <div>
+                              <span className="text-[#8B98A5] block text-[10px]">NET SENTIMENT SCORE</span>
                               <span
-                                key={d.driver}
-                                className="px-2 py-1 rounded bg-[#0D1218] border border-[#25313D] text-[11px] text-zinc-300"
+                                className={`text-lg font-bold ${
+                                  netScore >= 0.1
+                                    ? "text-emerald-400"
+                                    : netScore <= -0.1
+                                    ? "text-rose-400"
+                                    : "text-zinc-400"
+                                }`}
                               >
-                                {d.driver}: <strong className="text-white">{d.count}</strong>
+                                {netScore > 0 ? "+" : ""}
+                                {netScore.toFixed(3)}
                               </span>
-                            ))}
+                            </div>
+                            <div>
+                              <span className="text-[#8B98A5] block text-[10px]">VERIFIED ARTICLES</span>
+                              <span className="text-lg font-bold text-white">
+                                {totalCount}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-[#8B98A5] block text-[10px]">SIGNAL REGIME</span>
+                              <span className="text-xs font-bold px-2 py-0.5 rounded bg-zinc-800 text-[#D6A84F]">
+                                {regime}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Top Drivers */}
+                          <div className="space-y-1.5 pt-1">
+                            <span className="text-[11px] text-[#8B98A5] block">DOMINANT MACRO DRIVERS:</span>
+                            <div className="flex flex-wrap gap-2">
+                              {drivers.length > 0 ? (
+                                drivers.slice(0, 4).map((d) => (
+                                  <span
+                                    key={d.driver}
+                                    className="px-2 py-1 rounded bg-[#0D1218] border border-[#25313D] text-[11px] text-zinc-300"
+                                  >
+                                    {d.driver}: <strong className="text-white">{d.count}</strong>
+                                  </span>
+                                ))
+                              ) : (
+                                <span className="text-[11px] text-zinc-500 italic">No dominant drivers in window</span>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ) : (
+                      );
+                    })() : (
                       <p className="text-xs font-mono text-zinc-500">Awaiting news telemetry...</p>
                     )}
                   </div>
@@ -1191,15 +1242,15 @@ export default function VMDBullionDashboard() {
                         <div className="p-3 rounded bg-[#0D1218] border border-[#25313D]">
                           <span className="text-[#8B98A5] block text-[10px]">TOTAL GOLD WEIGHT</span>
                           <span className="text-sm font-bold text-[#D6A84F]">
-                            {portfolioSummary.gold.fine_weight_grams.toFixed(2)}g (
-                            {portfolioSummary.gold.fine_weight_kg.toFixed(3)}kg)
+                            {(portfolioSummary.gold?.fine_weight_grams ?? 0).toFixed(2)}g (
+                            {(portfolioSummary.gold?.fine_weight_kg ?? 0).toFixed(3)}kg)
                           </span>
                         </div>
                         <div className="p-3 rounded bg-[#0D1218] border border-[#25313D]">
                           <span className="text-[#8B98A5] block text-[10px]">TOTAL SILVER WEIGHT</span>
                           <span className="text-sm font-bold text-[#B8C1CA]">
-                            {portfolioSummary.silver.fine_weight_grams.toFixed(2)}g (
-                            {portfolioSummary.silver.fine_weight_kg.toFixed(3)}kg)
+                            {(portfolioSummary.silver?.fine_weight_grams ?? 0).toFixed(2)}g (
+                            {(portfolioSummary.silver?.fine_weight_kg ?? 0).toFixed(3)}kg)
                           </span>
                         </div>
                       </div>
@@ -2148,7 +2199,7 @@ export default function VMDBullionDashboard() {
                                   {r.records_changed}
                                 </td>
                                 <td className="py-2.5 px-3 text-right text-[#8B98A5]">
-                                  {r.duration_seconds.toFixed(2)}s
+                                  {(r.duration_seconds ?? 0).toFixed(2)}s
                                 </td>
                                 <td className="py-2.5 px-3 text-zinc-400">{r.executed_at}</td>
                               </tr>

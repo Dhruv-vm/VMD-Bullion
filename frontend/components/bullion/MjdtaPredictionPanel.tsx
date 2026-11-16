@@ -195,7 +195,7 @@ export function MjdtaPredictionPanel() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 font-mono text-xs">
           <div className="p-3 rounded bg-[#0D1218] border border-[#25313D]">
             <span className="text-[10px] text-[#8B98A5] block">ORIGIN MJDTA 24K (EXCL. GST)</span>
-            <span className="text-lg font-bold text-white">₹{snap.origin_gold_price_inr_per_g.toFixed(2)}/g</span>
+            <span className="text-lg font-bold text-white">₹{(snap.origin_gold_price_inr_per_g ?? 0).toFixed(2)}/g</span>
             <span className="text-[10px] text-zinc-500 block truncate">{snap.origin_observed_at}</span>
           </div>
           <div className="p-3 rounded bg-[#0D1218] border border-[#25313D]">
