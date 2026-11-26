@@ -257,6 +257,16 @@ def get_latest_city_rates(
         if own:
             db.close()
 
+    # Local dev CSV fallback if database has no rates (prior to overlaying in-memory city cache)
+    if not result_items and ENVIRONMENT != "production":
+        csv_rates = _read_latest_rates_from_csv()
+        if city_code:
+            norm = normalize_city_code(city_code)
+            csv_rates = [r for r in csv_rates if r["city_code"] == norm]
+        if metal:
+            csv_rates = [r for r in csv_rates if r["metal"] == metal.upper()]
+        result_items = csv_rates
+
     # Overlay / merge in-memory cached rates for the five non-persistent city feeds (IDs 48-52)
     cached_cities = live_city_cache.get_all_rates()
     if cached_cities:
@@ -282,15 +292,6 @@ def get_latest_city_rates(
                     merged_items.append(cached_item)
 
         result_items = merged_items
-
-    if not result_items and ENVIRONMENT != "production":
-        csv_rates = _read_latest_rates_from_csv()
-        if city_code:
-            norm = normalize_city_code(city_code)
-            csv_rates = [r for r in csv_rates if r["city_code"] == norm]
-        if metal:
-            csv_rates = [r for r in csv_rates if r["metal"] == metal.upper()]
-        return csv_rates
 
     return result_items
 

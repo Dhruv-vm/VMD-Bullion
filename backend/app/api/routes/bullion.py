@@ -97,22 +97,35 @@ def get_bullion_observations_history(
 
 async def _bullion_sse_generator(request: Request) -> AsyncIterator[str]:
     """
-    Stream genuine database state changes over SSE without manufacturing synthetic ticks.
-    Emits 'snapshot' only when latest_price/last_collected_at advances, plus periodic 'heartbeat'.
+    Stream genuine database and in-memory city cache state changes over SSE without synthetic ticks.
+    Emits 'snapshot' only when database watermark or city cache version advances, plus periodic 'heartbeat'.
     """
+    from app.services.kjpl.live_rate_service import live_city_cache
+
     last_watermark: str | None = None
     last_heartbeat = datetime.now(timezone.utc)
+    last_db_check = 0.0
+    db_wm = "none|none"
 
     while not await request.is_disconnected():
         try:
-            with db_session.SessionLocal() as db:
-                max_collected = db.execute(select(func.max(BullionLatestRate.last_collected_at))).scalar_one_or_none()
-                max_verified = db.execute(select(func.max(BullionLatestRate.last_verified_at))).scalar_one_or_none()
-                wm = f"{max_collected.isoformat() if max_collected else 'none'}|{max_verified.isoformat() if max_verified else 'none'}"
-                if wm != last_watermark:
+            cache_wm = live_city_cache.get_watermark()
+            now_loop = asyncio.get_running_loop().time()
+
+            # Check persistent database watermark periodically without spamming the DB on every 3s tick
+            if last_watermark is None or (now_loop - last_db_check) >= 15.0:
+                with db_session.SessionLocal() as db:
+                    max_collected = db.execute(select(func.max(BullionLatestRate.last_collected_at))).scalar_one_or_none()
+                    max_verified = db.execute(select(func.max(BullionLatestRate.last_verified_at))).scalar_one_or_none()
+                    db_wm = f"{max_collected.isoformat() if max_collected else 'none'}|{max_verified.isoformat() if max_verified else 'none'}"
+                last_db_check = now_loop
+
+            wm = f"{db_wm}|{cache_wm}"
+            if wm != last_watermark:
+                with db_session.SessionLocal() as db:
                     payload = get_bullion_dashboard(db=db)
-                    last_watermark = wm
-                    yield f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
+                last_watermark = wm
+                yield f"event: snapshot\ndata: {json.dumps(payload)}\n\n"
         except Exception as exc:
             yield f"event: status\ndata: {json.dumps({'status': 'DEGRADED', 'error': str(exc)})}\n\n"
 

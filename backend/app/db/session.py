@@ -13,11 +13,21 @@ from sqlalchemy.pool import NullPool
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REAL_DEFAULT_DB_PATH = (REPO_ROOT / "data" / "goldsense.db").resolve()
-DEFAULT_DB_DIR = Path("data")
-SQLITE_PATH = Path(os.environ.get("GOLDSENSE_SQLITE_PATH", str(DEFAULT_DB_DIR / "goldsense.db")))
+SQLITE_PATH = Path(os.environ.get("GOLDSENSE_SQLITE_PATH", str(REAL_DEFAULT_DB_PATH)))
 if os.environ.get("ENVIRONMENT", "development").lower() != "test":
     SQLITE_PATH.parent.mkdir(parents=True, exist_ok=True)
 SQLITE_URL = f"sqlite:///{SQLITE_PATH.resolve()}"
+
+# Automatically load .env.local or .env from REPO_ROOT if DATABASE_URL is not explicitly provided in environment
+if not os.environ.get("DATABASE_URL"):
+    try:
+        from dotenv import load_dotenv
+        for candidate in [REPO_ROOT / ".env.local", REPO_ROOT / ".env", Path.cwd() / ".env.local", Path.cwd() / ".env"]:
+            if candidate.is_file():
+                load_dotenv(candidate, override=False)
+                break
+    except ImportError:
+        pass
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development").lower()

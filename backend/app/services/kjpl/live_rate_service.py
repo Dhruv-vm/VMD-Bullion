@@ -16,9 +16,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 )
-KJPL_HOME_URL = "http://www.kjpl.in/"
-KJPL_TXT_URL = "http://www.kjpl.in/client/kjpl.txt"
-KJPL_RPANEL_URL = "http://www.kjpl.in/index.php/C_booking/get_rpanel_data"
+KJPL_HOME_URL = os.environ.get("KJPL_HOME_URL", "http://www.kjpl.in/")
+KJPL_TXT_URL = os.environ.get("KJPL_TXT_URL", "http://www.kjpl.in/client/kjpl.txt")
+KJPL_RPANEL_URL = os.environ.get("KJPL_RPANEL_URL", "http://www.kjpl.in/index.php/C_booking/get_rpanel_data")
 
 # Strict, explicit five-city non-persistent feeds mapping:
 # Key: source_product_id -> (city_code, product_id)
@@ -117,6 +117,7 @@ class CityLiveRateCache:
         self._rates: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._last_source_fetch_ts: float = 0.0
+        self._version: int = 0
 
     def update_rate(
         self,
@@ -224,6 +225,7 @@ class CityLiveRateCache:
                 "source_url": source_url,
                 "cached_at": time.time(),
             }
+            self._version += 1
             return (True, price_changed)
 
     def get_rate(self, city_code: str) -> dict[str, Any] | None:
@@ -253,6 +255,15 @@ class CityLiveRateCache:
         with self._lock:
             self._rates.clear()
             self._last_source_fetch_ts = 0.0
+            self._version += 1
+
+    def get_version(self) -> int:
+        with self._lock:
+            return self._version
+
+    def get_watermark(self) -> str:
+        with self._lock:
+            return f"v{self._version}:{self._last_source_fetch_ts:.3f}"
 
 
 # Global shared in-memory singleton cache
@@ -408,12 +419,34 @@ class CityLiveCollector:
         self._poll_count += 1
         return updated_count
 
+    def get_diagnostics(self) -> dict[str, Any]:
+        return {
+            "is_running": self.is_running(),
+            "poll_count": self._poll_count,
+            "last_error": self._last_error,
+            "cache_size": len(self.cache._rates),
+            "cache_version": self.cache.get_version(),
+            "is_warm": self.cache.is_warm(),
+            "is_fresh": self.cache.is_fresh(),
+            "last_source_fetch_ts": self.cache._last_source_fetch_ts,
+            "poll_interval_sec": self.poll_interval_sec,
+            "txt_url": KJPL_TXT_URL,
+        }
+
     async def _run_loop(self) -> None:
+        last_logged_err: str | None = None
         while not self._stop_event.is_set():
             try:
-                await self.poll_once()
+                cnt = await self.poll_once()
+                if self._last_error:
+                    print(f"[CITY_LIVE_COLLECTOR] Source recovered, updated {cnt} city rate(s).")
+                    self._last_error = None
+                    last_logged_err = None
             except Exception as e:
                 self._last_error = str(e)
+                if last_logged_err != self._last_error:
+                    print(f"[CITY_LIVE_COLLECTOR] Source poll error: {e}")
+                    last_logged_err = self._last_error
 
             try:
                 await asyncio.wait_for(
@@ -427,11 +460,13 @@ class CityLiveCollector:
         if self.is_running():
             return
         self._stop_event.clear()
+        print(f"[CITY_LIVE_COLLECTOR] Starting live collector loop (interval={self.poll_interval_sec}s, url={KJPL_TXT_URL})")
         self._task = asyncio.create_task(self._run_loop())
 
     async def stop(self, timeout: float = 5.0) -> None:
         if not self.is_running() and self._task is None:
             return
+        print("[CITY_LIVE_COLLECTOR] Stopping live collector loop...")
         self._stop_event.set()
         if self._task is not None:
             try:
