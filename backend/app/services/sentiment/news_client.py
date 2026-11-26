@@ -172,11 +172,17 @@ class NewsClient:
 
     def __init__(
         self,
-        timeout: int = 25,
+        timeout: int | float | tuple[float, float] = (5.0, 10.0),
         max_retries: int = 3,
         retry_wait_seconds: int = 8,
     ) -> None:
-        self.timeout = timeout
+        if isinstance(timeout, (tuple, list)) and len(timeout) == 2:
+            self.timeout: tuple[float, float] = (float(timeout[0]), float(timeout[1]))
+        elif isinstance(timeout, (int, float)):
+            self.timeout = (min(5.0, float(timeout)), float(timeout))
+        else:
+            self.timeout = (5.0, 10.0)
+
         self.max_retries = max_retries
         self.retry_wait_seconds = retry_wait_seconds
 
@@ -204,13 +210,17 @@ class NewsClient:
         """
         Search GDELT for news articles, falling back to RSS if rate-limited.
         """
-        # Circuit breaker: if GDELT rate limited recently, immediately use RSS fallback
-        if time.time() < self.__class__._gdelt_throttled_until and enable_fallback:
-            return self.search_rss(
-                query=query,
-                max_records=max_records,
-                start_datetime=start_datetime,
-                end_datetime=end_datetime,
+        # Circuit breaker: if GDELT rate limited recently, immediately use RSS fallback or fail fast
+        if time.time() < self.__class__._gdelt_throttled_until:
+            if enable_fallback:
+                return self.search_rss(
+                    query=query,
+                    max_records=max_records,
+                    start_datetime=start_datetime,
+                    end_datetime=end_datetime,
+                )
+            raise RuntimeError(
+                f"GDELT is in rate-limit cooldown until {self.__class__._gdelt_throttled_until:.0f}."
             )
 
         params: dict[str, Any] = {
@@ -321,20 +331,14 @@ class NewsClient:
 
         for group_name, queries in target_groups.items():
             query_str = queries[0]
-            print(f"[NEWS] Querying group [{group_name}]: '{query_str}'...")
+            t0 = time.perf_counter()
             group_error: str | None = None
             group_articles: list[NewsArticle] = []
+            source_used = "GDELT"
 
-            try:
-                group_articles = self.search(
-                    query=query_str,
-                    start_datetime=start,
-                    end_datetime=now,
-                    max_records=max_records_per_group,
-                    raise_on_error=True,
-                    enable_fallback=False,
-                )
-            except Exception as gdelt_exc:
+            # Fast check: if GDELT is currently in rate-limit cooldown, route directly to RSS
+            if time.time() < self.__class__._gdelt_throttled_until:
+                source_used = "RSS"
                 try:
                     group_articles = self.search_rss(
                         query=query_str,
@@ -343,15 +347,45 @@ class NewsClient:
                         end_datetime=now,
                     )
                 except Exception as rss_exc:
-                    group_error = f"GDELT: {gdelt_exc}; RSS: {rss_exc}"
+                    group_error = f"RSS: {rss_exc}"
                     group_articles = []
+            else:
+                try:
+                    group_articles = self.search(
+                        query=query_str,
+                        start_datetime=start,
+                        end_datetime=now,
+                        max_records=max_records_per_group,
+                        raise_on_error=True,
+                        enable_fallback=False,
+                    )
+                except Exception as gdelt_exc:
+                    source_used = "RSS_FALLBACK"
+                    try:
+                        group_articles = self.search_rss(
+                            query=query_str,
+                            max_records=max_records_per_group,
+                            start_datetime=start,
+                            end_datetime=now,
+                        )
+                    except Exception as rss_exc:
+                        group_error = f"GDELT: {gdelt_exc}; RSS: {rss_exc}"
+                        group_articles = []
 
+            elapsed = time.perf_counter() - t0
             raw_fetched += len(group_articles)
+            status_desc = f"{len(group_articles)} articles via {source_used} in {elapsed:.2f}s"
+            if group_error:
+                status_desc += f" (Error: {group_error})"
+            print(f"[NEWS] Query [{group_name}]: '{query_str}' -> {status_desc}")
+
             group_health.append(
                 {
                     "query_id": group_name,
                     "query": query_str,
                     "fetched": len(group_articles),
+                    "source": source_used,
+                    "elapsed_seconds": round(elapsed, 3),
                     "ok": group_error is None,
                     "error": group_error,
                 }

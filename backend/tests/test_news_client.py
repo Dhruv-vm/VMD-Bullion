@@ -140,3 +140,70 @@ def test_gdelt_failure_triggers_rss_fallback():
                 assert len(articles) == 1
                 assert articles[0].title == "Gold rebounds on festive demand"
                 mock_rss.assert_called_once()
+
+
+def test_circuit_breaker_skips_gdelt_when_throttled():
+    client = NewsClient(timeout=(3.0, 7.0))
+    assert client.timeout == (3.0, 7.0)
+
+    # Put GDELT into throttled cooldown
+    NewsClient._gdelt_throttled_until = datetime.now(timezone.utc).timestamp() + 180.0
+
+    fallback_articles = [
+        NewsArticle(
+            title="Gold steady as markets eye Fed",
+            url="https://example.com/rss-fed",
+            published_at=datetime.now(timezone.utc),
+            source="RSS Source",
+        )
+    ]
+
+    # When enable_fallback=True, should immediately return RSS without network call to GDELT
+    with patch.object(client.session, "get") as mock_get:
+        with patch.object(client, "search_rss", return_value=fallback_articles) as mock_rss:
+            articles = client.search(query="gold", enable_fallback=True)
+            assert len(articles) == 1
+            mock_get.assert_not_called()
+            mock_rss.assert_called_once()
+
+    # When enable_fallback=False, should fail fast with RuntimeError
+    import pytest
+    with patch.object(client.session, "get") as mock_get:
+        with pytest.raises(RuntimeError, match="GDELT is in rate-limit cooldown"):
+            client.search(query="gold", enable_fallback=False)
+        mock_get.assert_not_called()
+
+    # Reset circuit breaker
+    NewsClient._gdelt_throttled_until = 0.0
+
+
+def test_search_query_groups_fast_fallback_when_gdelt_throttled():
+    client = NewsClient()
+    NewsClient._gdelt_throttled_until = datetime.now(timezone.utc).timestamp() + 180.0
+
+    mock_article = NewsArticle(
+        title="Gold price today in Chennai",
+        url="https://example.com/gold-chennai",
+        published_at=datetime.now(timezone.utc),
+        source="Test Source",
+    )
+
+    with patch.object(client, "search") as mock_gdelt_search:
+        with patch.object(client, "search_rss", return_value=[mock_article]) as mock_rss:
+            res = client.search_query_groups(
+                groups={"GOLD": ["gold price"], "INDIA": ["India gold price"]},
+                lookback_hours=24,
+            )
+            # GDELT search must not be called because circuit breaker was tripped
+            mock_gdelt_search.assert_not_called()
+            # RSS should be called directly for each group
+            assert mock_rss.call_count == 2
+            assert len(res) >= 1
+            assert client.last_collection_health["queries_succeeded"] == 2
+            for g in client.last_collection_health["groups"]:
+                assert g["source"] == "RSS"
+                assert g["ok"] is True
+
+    # Reset circuit breaker
+    NewsClient._gdelt_throttled_until = 0.0
+
