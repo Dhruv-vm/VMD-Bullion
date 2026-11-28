@@ -19,11 +19,12 @@ export type BullionDashboardPayload = Record<string, unknown>;
 
 export async function fetchBullionDashboard(
   city: string = "CHENNAI",
-  historyLimit: number = 30
+  historyLimit: number = 30,
+  signal?: AbortSignal
 ): Promise<BullionDashboardPayload> {
   const res = await fetch(
     apiUrl(`/api/bullion/dashboard?city=${encodeURIComponent(city)}&history_limit=${historyLimit}`),
-    { cache: "no-store" }
+    { cache: "no-store", signal }
   );
   if (!res.ok) {
     throw new Error(`Dashboard request failed with HTTP ${res.status}`);

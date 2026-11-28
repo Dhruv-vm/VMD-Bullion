@@ -81,7 +81,7 @@ def _serialize_latest_rate(
     else:
         per_gram = None
 
-    fresh_ref = rate_obj.source_published_at or rate_obj.last_verified_at
+    fresh_ref = rate_obj.source_published_at or rate_obj.last_collected_at
     freshness = get_freshness_details(
         fresh_ref,
         rate_type=rate_obj.rate_type,
@@ -119,8 +119,13 @@ def _serialize_latest_rate(
         "validation_status": rate_obj.validation_status,
         "source_published_at": rate_obj.source_published_at.isoformat() if rate_obj.source_published_at else None,
         "source_updated_time": _format_pub_time_ist(rate_obj.source_published_at),
-        "observed_at": rate_obj.last_collected_at.isoformat() if rate_obj.last_collected_at else datetime.now(timezone.utc).isoformat(),
-        "last_verified_at": rate_obj.last_verified_at.isoformat() if rate_obj.last_verified_at else datetime.now(timezone.utc).isoformat(),
+        "observed_at": (
+            rate_obj.last_collected_at.isoformat()
+            if rate_obj.last_collected_at
+            else (rate_obj.source_published_at.isoformat() if rate_obj.source_published_at else None)
+        ),
+        "last_collected_at": rate_obj.last_collected_at.isoformat() if rate_obj.last_collected_at else None,
+        "last_verified_at": rate_obj.last_verified_at.isoformat() if rate_obj.last_verified_at else None,
         "freshness": freshness["status"],
         "age_hours": freshness["age_hours"],
         "age_seconds": freshness["age_seconds"],
@@ -542,11 +547,58 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
             "note": "Derived retail parity and wholesale spreads compare equivalent 24K fineness against international spot conversion.",
         }
 
+    primary_benchmark = chennai_mjdta_22k or legacy_benchmark_gold_24k
+
+    # Determine explicit system status across the 5 canonical states:
+    # 'Connected', 'Warming up', 'Reconnecting', 'Stale', 'Unavailable'
+    system_status = "Unavailable"
+    if primary_benchmark:
+        p_fresh = (primary_benchmark.get("freshness") or "UNKNOWN").upper()
+        if p_fresh in ("LIVE", "FRESH"):
+            system_status = "Connected"
+        elif p_fresh == "WARMING_UP":
+            system_status = "Warming up"
+        elif p_fresh == "RECONNECTING" or primary_benchmark.get("source_unavailable"):
+            system_status = "Reconnecting"
+        elif p_fresh in ("STALE", "DELAYED", "MARKET_CLOSED"):
+            system_status = "Stale"
+        elif p_fresh in ("SOURCE_UNAVAILABLE", "UNAVAILABLE"):
+            system_status = "Unavailable"
+        else:
+            system_status = "Stale"
+    else:
+        from app.services.kjpl.live_rate_service import live_city_cache
+        if not live_city_cache.is_warm():
+            system_status = "Warming up"
+        else:
+            system_status = "Unavailable"
+
+    last_obs_iso = None
+    last_obs_ist = None
+    last_obs_age = None
+    if primary_benchmark:
+        last_obs_iso = primary_benchmark.get("source_published_at") or primary_benchmark.get("observed_at")
+        last_obs_ist = primary_benchmark.get("source_updated_time")
+        last_obs_age = primary_benchmark.get("age_display")
+
     return {
         "terminal_title": "VMD Bullion Intelligence Terminal",
         "default_city": "CHENNAI",
         "data_source": "KJPL Exclusive",
         "trading_status": get_market_trading_status(),
+        "system_status": system_status,
+        "last_successful_observation": {
+            "source": "KJPL (MJDTA Benchmark)",
+            "product_id": primary_benchmark.get("product_id") if primary_benchmark else None,
+            "published_at": primary_benchmark.get("source_published_at") if primary_benchmark else None,
+            "observed_at": primary_benchmark.get("observed_at") if primary_benchmark else None,
+            "last_collected_at": primary_benchmark.get("last_collected_at") if primary_benchmark else None,
+            "updated_time_ist": last_obs_ist or "Unavailable",
+            "age_display": last_obs_age or "N/A",
+            "freshness": primary_benchmark.get("freshness") if primary_benchmark else "UNAVAILABLE",
+            "system_status": system_status,
+        },
+        "last_successful_update_ist": last_obs_ist or "Unavailable",
         "benchmark_gold_22k": chennai_mjdta_22k,
         "benchmark_gold_22k_gst": chennai_mjdta_22k_gst,
         "derived_gold_24k": derived_gold_24k,
@@ -567,6 +619,8 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
         },
         "city_tape": city_tape,
         "parity": parity_info,
+        "server_time_utc": datetime.now(timezone.utc).isoformat(),
+        "server_time_ist": datetime.now(IST).strftime("%Y-%m-%d %I:%M:%S %p IST"),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "timestamp_ist": datetime.now(IST).strftime("%Y-%m-%d %I:%M:%S %p IST"),
     }
@@ -755,7 +809,8 @@ def get_data_monitor_status(all_rates: list[dict[str, Any]] | None = None, db: S
                 "age_display": entry["age_display"],
                 "source_published_at": entry.get("source_published_at"),
                 "source_updated_time": entry["source_updated_time"],
-                "last_verified_at": entry["last_verified_at"],
+                "last_collected_at": entry.get("last_collected_at"),
+                "last_verified_at": entry.get("last_verified_at"),
             }
         else:
             city_freshness[c] = {
@@ -764,6 +819,7 @@ def get_data_monitor_status(all_rates: list[dict[str, Any]] | None = None, db: S
                 "age_display": "No live city data",
                 "source_published_at": None,
                 "source_updated_time": "Unavailable",
+                "last_collected_at": None,
                 "last_verified_at": None,
             }
 
@@ -849,6 +905,8 @@ def get_bullion_dashboard(
             "comparison": comparison,
             "monitor": monitor,
             "history": history,
+            "system_status": summary.get("system_status", "Unavailable"),
+            "last_successful_observation": summary.get("last_successful_observation"),
         }
     finally:
         if own:

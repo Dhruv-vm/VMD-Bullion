@@ -107,13 +107,29 @@ def get_freshness_details(
     rate_type: str = "RETAIL",
     market_status_override: str | None = None,
     source_unavailable: bool = False,
+    is_warming_up: bool = False,
+    is_reconnecting: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate honest freshness state tailored to feed cadence:
       - MJDTA_BENCHMARK (twice daily): FRESH <16h, DELAYED 16-36h, STALE >36h
       - Live feeds (KJPL_LIVE / RETAIL / WHOLESALE): LIVE <120s, FRESH <4h, DELAYED 4-24h, STALE >24h
-    Respects market-closed and source-unavailable states without fabricating activity.
+    Respects warming-up, reconnecting, market-closed and source-unavailable states without fabricating activity.
     """
+    if is_warming_up:
+        return {
+            "status": "WARMING_UP",
+            "age_hours": None,
+            "age_seconds": None,
+            "age_display": "Warming up",
+        }
+    if is_reconnecting:
+        return {
+            "status": "RECONNECTING",
+            "age_hours": None,
+            "age_seconds": None,
+            "age_display": "Reconnecting",
+        }
     if source_unavailable:
         return {
             "status": "SOURCE_UNAVAILABLE",
@@ -138,18 +154,27 @@ def get_freshness_details(
     if market_status_override in ("SUNDAY_CLOSED", "WEEKEND_CLOSED", "CLOSED"):
         status = "MARKET_CLOSED"
     elif rate_type in ("MJDTA_BENCHMARK", "LBMA_FIX"):
-        if age_hours < MJDTA_FRESH_HOURS:
+        # Twice-daily benchmark intervals:
+        # [0, 16.0h]: FRESH (covers morning/afternoon fix cadence and overnight gap)
+        # (16.0h, 36.0h]: DELAYED (missed single fix window; never classified as Connected)
+        # >36.0h: STALE (obsolete market quote across multiple sessions/weekend)
+        if age_hours <= MJDTA_FRESH_HOURS:
             status = "FRESH"
-        elif age_hours < MJDTA_DELAYED_HOURS:
+        elif age_hours <= MJDTA_DELAYED_HOURS:
             status = "DELAYED"
         else:
             status = "STALE"
     else:
+        # Live streaming and intraday feed intervals:
+        # [0, 120s]: LIVE (real-time stream quote)
+        # (120s, 4.0h]: FRESH (active intraday reference quote)
+        # (4.0h, 24.0h]: DELAYED (missed intraday ticks; never classified as Connected)
+        # >24.0h: STALE (multi-day obsolete quote)
         if age_seconds <= LIVE_FEED_LIVE_SECONDS:
             status = "LIVE"
-        elif age_hours < LIVE_FEED_FRESH_HOURS:
+        elif age_hours <= LIVE_FEED_FRESH_HOURS:
             status = "FRESH"
-        elif age_hours < LIVE_FEED_DELAYED_HOURS:
+        elif age_hours <= LIVE_FEED_DELAYED_HOURS:
             status = "DELAYED"
         else:
             status = "STALE"
@@ -209,8 +234,10 @@ def _get_latest_kjpl_from_db() -> dict[str, Any] | None:
             "silver_mjdta": silver,
             "published_time": pub_dt.astimezone(IST).strftime("%d-%m-%Y %I:%M %p IST") if pub_dt else "Unverified date",
             "source_published_at": pub_dt.isoformat() if pub_dt else None,
-            "observed_at": coll_dt.isoformat(),
-            "last_verified_at": gold_row.last_verified_at.isoformat(),
+            "observed_at": coll_dt.isoformat() if coll_dt else (pub_dt.isoformat() if pub_dt else None),
+            "last_collected_at": coll_dt.isoformat() if coll_dt else None,
+            "last_verified_at": gold_row.last_verified_at.isoformat() if gold_row.last_verified_at else None,
+            "last_successful_update": pub_dt.isoformat() if pub_dt else (coll_dt.isoformat() if coll_dt else None),
             "currency": "INR",
             "unit": "gram",
             "change_24h_inr": round(change_inr, 2),

@@ -4,6 +4,14 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { apiUrl, BullionDashboardPayload, fetchBullionDashboard, openBullionEventStream } from "../lib/api";
 import { KjplLiveDeskPanel } from "../components/bullion/KjplLiveDeskPanel";
 import { MjdtaPredictionPanel } from "../components/bullion/MjdtaPredictionPanel";
+import {
+  loadStoredPreferences,
+  saveStoredPreferences,
+  CitySelectionCoordinator,
+  validateHoldingForm,
+  validateAlertForm,
+  formatSyncNotice,
+} from "../lib/terminal-actions";
 
 // =============================================================================
 // TYPES & INTERFACES
@@ -25,8 +33,10 @@ interface CityRateItem {
   change_pct: number;
   per_gram_price: number;
   currency: string;
+  source_published_at?: string | null;
   source_updated_time: string;
   observed_at: string;
+  last_collected_at?: string | null;
   last_verified_at: string;
   freshness: string;
   age_hours?: number;
@@ -49,8 +59,10 @@ interface CityComparisonItem {
   spread_vs_chennai_pct: number | null;
   is_baseline: boolean;
   validation_status?: string;
+  source_published_at?: string | null;
   source_updated_time: string;
   observed_at: string | null;
+  last_collected_at?: string | null;
   last_verified_at: string | null;
   freshness: string;
 }
@@ -116,6 +128,19 @@ interface BullionSummaryResponse {
     market_freshness: string;
     note?: string;
   } | null;
+  system_status?: "Connected" | "Warming up" | "Reconnecting" | "Stale" | "Unavailable" | string;
+  last_successful_observation?: {
+    source?: string;
+    product_id?: string | null;
+    published_at?: string | null;
+    observed_at?: string | null;
+    last_collected_at?: string | null;
+    updated_time_ist?: string;
+    age_display?: string;
+    freshness?: string;
+    system_status?: string;
+  } | null;
+  last_successful_update_ist?: string;
   timestamp_utc: string;
   timestamp_ist: string;
 }
@@ -272,7 +297,10 @@ type TerminalTab =
 
 export default function VMDBullionDashboard() {
   const [activeTab, setActiveTab] = useState<TerminalTab>("overview");
-  const [selectedCity, setSelectedCity] = useState<string>("CHENNAI");
+
+  // Load persistent non-sensitive preferences (selectedCity, userId) safely; API Key is NEVER stored
+  const [initialPrefs] = useState(() => loadStoredPreferences());
+  const [selectedCity, setSelectedCity] = useState<string>(initialPrefs.selectedCity);
 
   // Bullion data states
   const [bullionSummary, setBullionSummary] = useState<BullionSummaryResponse | null>(null);
@@ -300,8 +328,26 @@ export default function VMDBullionDashboard() {
   const [streamStatus, setStreamStatus] = useState<{ connected: boolean; degraded?: boolean; message?: string }>({
     connected: false,
   });
-  const [userId, setUserId] = useState("owner");
+  const [userId, setUserId] = useState(initialPrefs.userId);
+  // Session-only API Key: Never stored in localStorage or disk to prevent XSS exfiltration
   const [apiKey, setApiKey] = useState("");
+  const [isNewsLoading, setIsNewsLoading] = useState(false);
+  const [isSubmittingHolding, setIsSubmittingHolding] = useState(false);
+  const [holdingError, setHoldingError] = useState<string | null>(null);
+  const [deletingHoldingId, setDeletingHoldingId] = useState<number | null>(null);
+  const [isSubmittingAlert, setIsSubmittingAlert] = useState(false);
+  const [alertError, setAlertError] = useState<string | null>(null);
+  const [deletingAlertId, setDeletingAlertId] = useState<number | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+
+  // City request coordinator to prevent out-of-order race conditions
+  const [cityCoordinator] = useState(() => new CitySelectionCoordinator(initialPrefs.selectedCity));
+
+  const handleSavePreferences = () => {
+    const res = saveStoredPreferences({ selectedCity, userId });
+    setSettingsNotice(res.message);
+    setTimeout(() => setSettingsNotice(null), 4000);
+  };
 
   // Modals
   const [isAddHoldingOpen, setIsAddHoldingOpen] = useState(false);
@@ -324,7 +370,7 @@ export default function VMDBullionDashboard() {
 
   const [alertForm, setAlertForm] = useState({
     alert_type: "PRICE_ABOVE",
-    target_metric: "CHENNAI_GOLD_24K",
+    target_metric: "MJDTA_GOLD_22K",
     threshold: "13500",
     notes: "",
   });
@@ -366,6 +412,7 @@ export default function VMDBullionDashboard() {
   }, [selectedCity, applyDashboardPayload]);
 
   const fetchNewsData = useCallback(async (windowHours: number) => {
+    setIsNewsLoading(true);
     try {
       const sigRes = await fetch(apiUrl(`/api/news/live-signal?window_hours=${windowHours}`));
       if (sigRes.ok) setLiveNewsSignal(await sigRes.json());
@@ -377,6 +424,8 @@ export default function VMDBullionDashboard() {
       }
     } catch (e) {
       console.error("Error fetching news", e);
+    } finally {
+      setIsNewsLoading(false);
     }
   }, []);
 
@@ -442,102 +491,132 @@ export default function VMDBullionDashboard() {
     };
   }, [newsWindowHours, fetchNewsData]);
 
-  useEffect(() => {
-    fetch(apiUrl(`/api/bullion/history?city=${selectedCity}&limit=20`))
-      .then((res) => (res.ok ? res.json() : []))
-      .then((data) => setHistoryRecords(data))
-      .catch(() => {});
-  }, [selectedCity]);
+  // City selector handler that updates selection and immediately loads city dashboard
+  // Uses CitySelectionCoordinator to prevent out-of-order race conditions
+  const handleSelectCity = (cityCode: string) => {
+    setSelectedCity(cityCode);
+    void cityCoordinator.selectCity(
+      cityCode,
+      fetchBullionDashboard,
+      (dash) => applyDashboardPayload(dash)
+    );
+  };
 
-  // Refresh handler
+  // Refresh handler across entire terminal
   const handleRefresh = async () => {
     setIsRefreshing(true);
     setRefreshNotice(null);
     try {
-      await fetchBullionData();
-      setRefreshNotice("Verified KJPL database state synced.");
-    } catch {
-      setRefreshNotice("Sync failed: database or backend unavailable.");
+      const [dash] = await Promise.all([
+        fetchBullionDashboard(selectedCity, 30),
+        fetchNewsData(newsWindowHours),
+        fetchPortfolioAndAlerts(),
+      ]);
+      applyDashboardPayload(dash);
+      const summary = dash?.summary as BullionSummaryResponse | undefined;
+      const status = summary?.system_status || "Connected";
+      const lastObs = summary?.last_successful_observation?.updated_time_ist || summary?.last_successful_update_ist;
+      setRefreshNotice(formatSyncNotice(status, lastObs));
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Database or backend unavailable.";
+      setRefreshNotice(`Sync failed: ${msg}`);
     } finally {
       setIsRefreshing(false);
-      setTimeout(() => setRefreshNotice(null), 4000);
+      setTimeout(() => setRefreshNotice(null), 5000);
     }
   };
 
   // Holdings Handlers
   const handleCreateHolding = async (e: React.FormEvent) => {
     e.preventDefault();
+    setHoldingError(null);
+    const validation = validateHoldingForm(holdingForm);
+    if (!validation.valid) {
+      setHoldingError(validation.error);
+      return;
+    }
+
+    setIsSubmittingHolding(true);
     try {
-      const payload = {
-        metal_type: holdingForm.metal_type,
-        product_name: holdingForm.product_name,
-        purity: parseFloat(holdingForm.purity),
-        gross_weight: parseFloat(holdingForm.gross_weight),
-        weight_unit: holdingForm.weight_unit,
-        quantity: parseInt(holdingForm.quantity, 10),
-        acquisition_date: holdingForm.acquisition_date || null,
-        acquisition_cost_inr: holdingForm.acquisition_cost_inr ? parseFloat(holdingForm.acquisition_cost_inr) : null,
-        notes: holdingForm.notes,
-      };
       const res = await fetch(apiUrl("/api/portfolio/holdings"), {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsAddHoldingOpen(false);
+        setHoldingError(null);
         fetchPortfolioAndAlerts();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setHoldingError(errJson.detail || errJson.message || `Failed to create holding (HTTP ${res.status})`);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error while saving holding.";
+      setHoldingError(msg);
+    } finally {
+      setIsSubmittingHolding(false);
     }
   };
 
   const handleUpdateHolding = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingHolding) return;
+    setHoldingError(null);
+    const validation = validateHoldingForm(holdingForm);
+    if (!validation.valid) {
+      setHoldingError(validation.error);
+      return;
+    }
+
+    setIsSubmittingHolding(true);
     try {
-      const payload = {
-        metal_type: holdingForm.metal_type,
-        product_name: holdingForm.product_name,
-        purity: parseFloat(holdingForm.purity),
-        gross_weight: parseFloat(holdingForm.gross_weight),
-        weight_unit: holdingForm.weight_unit,
-        quantity: parseInt(holdingForm.quantity, 10),
-        acquisition_date: holdingForm.acquisition_date || null,
-        acquisition_cost_inr: holdingForm.acquisition_cost_inr ? parseFloat(holdingForm.acquisition_cost_inr) : null,
-        notes: holdingForm.notes,
-      };
       const res = await fetch(apiUrl(`/api/portfolio/holdings/${editingHolding.id}`), {
         method: "PUT",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsEditHoldingOpen(false);
         setEditingHolding(null);
+        setHoldingError(null);
         fetchPortfolioAndAlerts();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setHoldingError(errJson.detail || errJson.message || `Failed to update holding (HTTP ${res.status})`);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error while updating holding.";
+      setHoldingError(msg);
+    } finally {
+      setIsSubmittingHolding(false);
     }
   };
 
   const handleDeleteHolding = async (id: number) => {
-    if (!confirm("Remove this bullion holding from your vault?")) return;
+    if (!confirm(`Remove bullion holding #${id} from your vault?`)) return;
+    setDeletingHoldingId(id);
     try {
       const res = await fetch(apiUrl(`/api/portfolio/holdings/${id}`), {
         method: "DELETE",
         headers: getHeaders(),
       });
-      if (res.ok) fetchPortfolioAndAlerts();
-    } catch (err) {
-      console.error(err);
+      if (res.ok) {
+        fetchPortfolioAndAlerts();
+      } else {
+        alert(`Failed to delete holding #${id}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Network error deleting holding: ${msg}`);
+    } finally {
+      setDeletingHoldingId(null);
     }
   };
 
   const openEditModal = (h: Holding) => {
     setEditingHolding(h);
+    setHoldingError(null);
     setHoldingForm({
       metal_type: h.metal_type,
       product_name: h.product_name,
@@ -546,7 +625,7 @@ export default function VMDBullionDashboard() {
       weight_unit: "g",
       quantity: String(h.quantity),
       acquisition_date: h.acquisition_date || "",
-      acquisition_cost_inr: h.acquisition_cost_inr !== null ? String(h.acquisition_cost_inr) : "",
+      acquisition_cost_inr: h.acquisition_cost_inr !== null && h.acquisition_cost_inr !== undefined ? String(h.acquisition_cost_inr) : "",
       notes: h.notes || "",
     });
     setIsEditHoldingOpen(true);
@@ -555,36 +634,54 @@ export default function VMDBullionDashboard() {
   // Alert Handlers
   const handleCreateAlert = async (e: React.FormEvent) => {
     e.preventDefault();
+    setAlertError(null);
+    const validation = validateAlertForm(alertForm);
+    if (!validation.valid) {
+      setAlertError(validation.error);
+      return;
+    }
+
+    setIsSubmittingAlert(true);
     try {
-      const payload = {
-        alert_type: alertForm.alert_type,
-        target_metric: alertForm.target_metric,
-        threshold: parseFloat(alertForm.threshold),
-        notes: alertForm.notes,
-      };
       const res = await fetch(apiUrl("/api/alerts"), {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsAddAlertOpen(false);
+        setAlertError(null);
         fetchPortfolioAndAlerts();
+      } else {
+        const errJson = await res.json().catch(() => ({}));
+        setAlertError(errJson.detail || errJson.message || `Failed to create alert (HTTP ${res.status})`);
       }
-    } catch (err) {
-      console.error(err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Network error while creating alert.";
+      setAlertError(msg);
+    } finally {
+      setIsSubmittingAlert(false);
     }
   };
 
   const handleDeleteAlert = async (id: number) => {
+    if (!confirm(`Delete alert rule #${id}?`)) return;
+    setDeletingAlertId(id);
     try {
       const res = await fetch(apiUrl(`/api/alerts/${id}`), {
         method: "DELETE",
         headers: getHeaders(),
       });
-      if (res.ok) fetchPortfolioAndAlerts();
-    } catch (err) {
-      console.error(err);
+      if (res.ok) {
+        fetchPortfolioAndAlerts();
+      } else {
+        alert(`Failed to delete alert rule #${id}`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Network error deleting alert rule: ${msg}`);
+    } finally {
+      setDeletingAlertId(null);
     }
   };
 
@@ -613,10 +710,10 @@ export default function VMDBullionDashboard() {
 
   const getFreshnessBadge = (status: string | undefined) => {
     const s = (status || "").toUpperCase();
-    if (s === "LIVE") {
+    if (s === "CONNECTED" || s === "LIVE") {
       return (
         <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-950 text-emerald-300 border border-emerald-700 animate-pulse">
-          ● LIVE
+          ● {s === "CONNECTED" ? "CONNECTED" : "LIVE"}
         </span>
       );
     }
@@ -624,6 +721,20 @@ export default function VMDBullionDashboard() {
       return (
         <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">
           ● FRESH
+        </span>
+      );
+    }
+    if (s === "WARMING UP" || s === "WARMING_UP") {
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-950 text-amber-300 border border-amber-800">
+          ⟳ WARMING UP
+        </span>
+      );
+    }
+    if (s === "RECONNECTING") {
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-amber-950 text-amber-400 border border-amber-700 animate-pulse">
+          ▲ RECONNECTING
         </span>
       );
     }
@@ -643,8 +754,8 @@ export default function VMDBullionDashboard() {
     }
     if (s === "SOURCE_UNAVAILABLE" || s === "UNAVAILABLE") {
       return (
-        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-zinc-900 text-amber-300 border border-amber-800/70">
-          ⚠ UNAVAILABLE
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-zinc-900 text-zinc-400 border border-zinc-700">
+          ✕ UNAVAILABLE
         </span>
       );
     }
@@ -657,7 +768,7 @@ export default function VMDBullionDashboard() {
     }
     return (
       <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-semibold bg-rose-950 text-rose-400 border border-rose-800">
-        ✕ STALE
+        ⚠ STALE
       </span>
     );
   };
@@ -694,14 +805,46 @@ export default function VMDBullionDashboard() {
 
           {/* Engine & Connection Status */}
           <div className="flex items-center gap-2 sm:gap-4 text-xs font-mono">
-            <span className="px-2 py-0.5 rounded text-[11px] bg-[#111820] border border-[#25313D] text-[#8B98A5] flex items-center gap-1.5">
-              <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  streamStatus.connected && !streamStatus.degraded ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
-                }`}
-              />
-              {streamStatus.connected && !streamStatus.degraded ? "SSE LIVE" : "POLLING"}
-            </span>
+            {/* Explicit 5-State System Freshness Indicator */}
+            {(() => {
+              const sysStatus = (
+                bullionSummary?.system_status ||
+                (streamStatus.connected && !streamStatus.degraded
+                  ? "Connected"
+                  : streamStatus.degraded
+                  ? "Reconnecting"
+                  : "Warming up")
+              );
+              const isConnected = sysStatus === "Connected";
+              const isStale = sysStatus === "Stale";
+              const isReconnecting = sysStatus === "Reconnecting";
+              const isWarming = sysStatus === "Warming up";
+              const dotColor = isConnected
+                ? "bg-emerald-400 animate-pulse"
+                : isStale
+                ? "bg-amber-400"
+                : isReconnecting
+                ? "bg-amber-400 animate-ping"
+                : isWarming
+                ? "bg-sky-400 animate-pulse"
+                : "bg-rose-400";
+              const badgeBorder = isConnected
+                ? "border-emerald-800/80 text-emerald-300"
+                : isStale
+                ? "border-amber-700 text-amber-300"
+                : isReconnecting
+                ? "border-amber-600 text-amber-400"
+                : isWarming
+                ? "border-sky-700 text-sky-300"
+                : "border-rose-800 text-rose-400";
+              return (
+                <span className={`px-2 py-0.5 rounded text-[11px] bg-[#111820] border ${badgeBorder} flex items-center gap-1.5 font-mono`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+                  <span className="font-bold">{sysStatus.toUpperCase()}</span>
+                </span>
+              );
+            })()}
+
             {monitorStatus?.database ? (
               <span className="px-2 py-0.5 rounded text-[11px] bg-[#111820] border border-[#25313D] text-[#8B98A5] flex items-center gap-1.5">
                 <span className={`w-1.5 h-1.5 rounded-full ${monitorStatus.database.connected ? "bg-emerald-400" : "bg-rose-400"}`} />
@@ -712,8 +855,25 @@ export default function VMDBullionDashboard() {
               </span>
             ) : null}
 
-            <span className="text-[#8B98A5] text-[11px] hidden md:inline">
-              {bullionSummary?.timestamp_ist || "CONNECTING..."}
+            {/* Honest Observation Provenance Display (Never wall-clock) */}
+            <span className="text-[#8B98A5] text-[11px] hidden md:inline font-mono">
+              {bullionSummary?.last_successful_observation?.updated_time_ist ? (
+                <>
+                  <span className="text-zinc-500">OBSERVED: </span>
+                  <span className={bullionSummary.system_status === "Stale" ? "text-amber-400 font-semibold" : "text-white font-semibold"}>
+                    {bullionSummary.last_successful_observation.updated_time_ist}
+                  </span>{" "}
+                  <span className="text-zinc-500">({bullionSummary.last_successful_observation.age_display})</span>
+                </>
+              ) : bullionSummary?.benchmark_gold_22k?.source_updated_time ? (
+                <>
+                  <span className="text-zinc-500">OBSERVED: </span>
+                  <span className="text-white font-semibold">{bullionSummary.benchmark_gold_22k.source_updated_time}</span>{" "}
+                  <span className="text-zinc-500">({bullionSummary.benchmark_gold_22k.age_display})</span>
+                </>
+              ) : (
+                "CONNECTING..."
+              )}
             </span>
 
             <button
@@ -740,7 +900,7 @@ export default function VMDBullionDashboard() {
               <div
                 key={c.city_code}
                 onClick={() => {
-                  setSelectedCity(c.city_code);
+                  handleSelectCity(c.city_code);
                   setActiveTab("india-bullion");
                 }}
                 className="flex items-center gap-1.5 cursor-pointer hover:text-[#D6A84F] transition"
@@ -1063,7 +1223,7 @@ export default function VMDBullionDashboard() {
                             <tr
                               key={c.city_code}
                               onClick={() => {
-                                setSelectedCity(c.city_code);
+                                handleSelectCity(c.city_code);
                                 setActiveTab("india-bullion");
                               }}
                               className={`cursor-pointer transition hover:bg-[#1E293B]/60 ${
@@ -1320,7 +1480,7 @@ export default function VMDBullionDashboard() {
                       return (
                         <button
                           key={city.city_code}
-                          onClick={() => setSelectedCity(city.city_code)}
+                          onClick={() => handleSelectCity(city.city_code)}
                           className={`px-4 py-2 rounded font-mono text-xs font-semibold transition flex items-center gap-2 ${
                             isSelected
                               ? "bg-[#D6A84F] text-black shadow-md font-bold"
@@ -1733,21 +1893,32 @@ export default function VMDBullionDashboard() {
                       </h2>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-[#8B98A5]">Window:</span>
-                      {[24, 48, 72].map((hours) => (
-                        <button
-                          key={hours}
-                          onClick={() => setNewsWindowHours(hours)}
-                          className={`px-2.5 py-1 rounded text-xs font-mono transition ${
-                            newsWindowHours === hours
-                              ? "bg-[#D6A84F] text-black font-bold"
-                              : "bg-[#0D1218] border border-[#25313D] text-[#8B98A5] hover:text-white"
-                          }`}
-                        >
-                          {hours}H
-                        </button>
-                      ))}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-[#8B98A5]">Window:</span>
+                        {[24, 48, 72].map((hours) => (
+                          <button
+                            key={hours}
+                            onClick={() => setNewsWindowHours(hours)}
+                            className={`px-2.5 py-1 rounded text-xs font-mono transition ${
+                              newsWindowHours === hours
+                                ? "bg-[#D6A84F] text-black font-bold"
+                                : "bg-[#0D1218] border border-[#25313D] text-[#8B98A5] hover:text-white"
+                            }`}
+                          >
+                            {hours}H
+                          </button>
+                        ))}
+                      </div>
+
+                      <button
+                        onClick={() => fetchNewsData(newsWindowHours)}
+                        disabled={isNewsLoading}
+                        className="px-2.5 py-1 rounded bg-[#0D1218] hover:bg-[#1E293B] border border-[#25313D] hover:border-[#D6A84F]/50 text-xs font-mono text-[#D6A84F] flex items-center gap-1.5 transition"
+                      >
+                        <span className={isNewsLoading ? "animate-spin inline-block" : ""}>↻</span>
+                        <span>{isNewsLoading ? "FETCHING..." : "REFRESH NEWS"}</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1884,22 +2055,23 @@ export default function VMDBullionDashboard() {
                       </span>
                     </div>
 
-                    <div className="p-4 rounded bg-[#0D1218] border border-[#25313D] space-y-2">
-                      <span className="text-[#8B98A5] text-[10px] block">MAX INTER-CITY SPREAD</span>
-                      <span className="text-2xl font-bold text-emerald-400">
-                        ₹
-                        {formatINR(
-                          Math.max(...(cityComparison?.cities?.map((c) => c.per_gram_price || 0) || [0])) -
-                            Math.min(
-                              ...(cityComparison?.cities
-                                ?.map((c) => c.per_gram_price || 999999)
-                                .filter((p) => p > 0) || [0])
-                            )
-                        )}
-                        /g
-                      </span>
-                      <span className="text-[10px] text-zinc-500 block">Across 5 Primary Indian Metros</span>
-                    </div>
+                    {(() => {
+                      const validPrices = (cityComparison?.cities || [])
+                        .map((c) => Number(c.per_gram_price))
+                        .filter((p) => Number.isFinite(p) && p > 0);
+                      const maxSpread = validPrices.length >= 2 ? Math.max(...validPrices) - Math.min(...validPrices) : null;
+                      return (
+                        <div className="p-4 rounded bg-[#0D1218] border border-[#25313D] space-y-2">
+                          <span className="text-[#8B98A5] text-[10px] block">MAX INTER-CITY SPREAD</span>
+                          <span className="text-2xl font-bold text-emerald-400">
+                            {maxSpread !== null ? `₹${formatINR(maxSpread)}/g` : "—"}
+                          </span>
+                          <span className="text-[10px] text-zinc-500 block">
+                            {validPrices.length >= 2 ? "Across 5 Primary Indian Metros" : "Requires at least 2 comparable city rates"}
+                          </span>
+                        </div>
+                      );
+                    })()}
 
                     <div className="p-4 rounded bg-[#0D1218] border border-[#25313D] space-y-2">
                       <span className="text-[#8B98A5] text-[10px] block">STATUTORY GST IMPACT</span>
@@ -2044,9 +2216,10 @@ export default function VMDBullionDashboard() {
                                 </button>
                                 <button
                                   onClick={() => handleDeleteHolding(h.id)}
-                                  className="text-[11px] text-[#8B98A5] hover:text-rose-400 transition"
+                                  disabled={deletingHoldingId === h.id}
+                                  className="text-[11px] text-[#8B98A5] hover:text-rose-400 disabled:text-zinc-600 transition"
                                 >
-                                  Delete
+                                  {deletingHoldingId === h.id ? "Deleting..." : "Delete"}
                                 </button>
                               </td>
                             </tr>
@@ -2114,9 +2287,10 @@ export default function VMDBullionDashboard() {
                               <td className="py-3 px-3 text-center">
                                 <button
                                   onClick={() => handleDeleteAlert(a.id)}
-                                  className="text-rose-400 hover:text-rose-300 text-[11px]"
+                                  disabled={deletingAlertId === a.id}
+                                  className="text-rose-400 hover:text-rose-300 disabled:text-zinc-600 text-[11px] transition"
                                 >
-                                  Remove
+                                  {deletingAlertId === a.id ? "Removing..." : "Remove"}
                                 </button>
                               </td>
                             </tr>
@@ -2280,7 +2454,7 @@ export default function VMDBullionDashboard() {
                       <label className="block text-[#8B98A5] mb-1">DEFAULT INDIAN CITY</label>
                       <select
                         value={selectedCity}
-                        onChange={(e) => setSelectedCity(e.target.value)}
+                        onChange={(e) => handleSelectCity(e.target.value)}
                         className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                       >
                         {bullionCities.map((c) => (
@@ -2302,14 +2476,31 @@ export default function VMDBullionDashboard() {
                     </div>
 
                     <div>
-                      <label className="block text-[#8B98A5] mb-1">OPTIONAL API AUTHORIZATION KEY</label>
+                      <label className="block text-[#8B98A5] mb-1">
+                        OPTIONAL API AUTHORIZATION KEY{" "}
+                        <span className="text-[10px] text-amber-400/90 font-mono">(Session-only; never stored in localStorage)</span>
+                      </label>
                       <input
                         type="password"
-                        placeholder="Bearer token if configured"
+                        placeholder="Bearer token if configured (held in memory only)"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                       />
+                    </div>
+
+                    <div className="pt-2">
+                      <button
+                        onClick={handleSavePreferences}
+                        className="px-4 py-2 rounded bg-[#D6A84F] hover:bg-[#D6A84F]/90 text-black font-bold font-mono text-xs transition"
+                      >
+                        SAVE PREFERENCES
+                      </button>
+                      {settingsNotice && (
+                        <p className="text-xs text-emerald-400 mt-2 font-mono">
+                          ✓ {settingsNotice}
+                        </p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2330,6 +2521,13 @@ export default function VMDBullionDashboard() {
             <h3 className="text-base font-bold text-white font-mono uppercase text-[#D6A84F]">
               Add Bullion Holding to Vault
             </h3>
+
+            {holdingError && (
+              <div className="p-2.5 rounded bg-rose-950/80 border border-rose-800 text-rose-300 text-xs font-mono">
+                ⚠ {holdingError}
+              </div>
+            )}
+
             <form onSubmit={handleCreateHolding} className="space-y-4 text-xs font-mono">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2344,15 +2542,17 @@ export default function VMDBullionDashboard() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[#8B98A5] mb-1">Purity (e.g. 0.999)</label>
+                  <label className="block text-[#8B98A5] mb-1">Purity (Fineness)</label>
                   <input
                     type="number"
                     step="0.001"
                     required
                     value={holdingForm.purity}
                     onChange={(e) => setHoldingForm({ ...holdingForm, purity: e.target.value })}
+                    placeholder="e.g. 0.916 or 0.999"
                     className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                   />
+                  <span className="text-[10px] text-zinc-500 block mt-0.5">22K / 916 (0.916) or 24K / 999 (0.999)</span>
                 </div>
               </div>
 
@@ -2363,6 +2563,7 @@ export default function VMDBullionDashboard() {
                   required
                   value={holdingForm.product_name}
                   onChange={(e) => setHoldingForm({ ...holdingForm, product_name: e.target.value })}
+                  placeholder="e.g. 22K Gold Chain, 100g 999 Bar"
                   className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                 />
               </div>
@@ -2392,16 +2593,27 @@ export default function VMDBullionDashboard() {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[#8B98A5] mb-1">Total Cost in INR (Optional)</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="Total purchase price"
-                  value={holdingForm.acquisition_cost_inr}
-                  onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_cost_inr: e.target.value })}
-                  className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[#8B98A5] mb-1">Acquisition Date (Optional)</label>
+                  <input
+                    type="date"
+                    value={holdingForm.acquisition_date}
+                    onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_date: e.target.value })}
+                    className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[#8B98A5] mb-1">Total Cost in INR (Optional)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    placeholder="Total purchase price"
+                    value={holdingForm.acquisition_cost_inr}
+                    onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_cost_inr: e.target.value })}
+                    className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
+                  />
+                </div>
               </div>
 
               <div>
@@ -2410,6 +2622,7 @@ export default function VMDBullionDashboard() {
                   type="text"
                   value={holdingForm.notes}
                   onChange={(e) => setHoldingForm({ ...holdingForm, notes: e.target.value })}
+                  placeholder="e.g. Purchased from Chennai retailer"
                   className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                 />
               </div>
@@ -2417,16 +2630,21 @@ export default function VMDBullionDashboard() {
               <div className="flex justify-end gap-3 pt-3 border-t border-[#25313D]">
                 <button
                   type="button"
-                  onClick={() => setIsAddHoldingOpen(false)}
-                  className="px-3 py-1.5 bg-[#1E293B] text-zinc-300 rounded font-semibold"
+                  disabled={isSubmittingHolding}
+                  onClick={() => {
+                    setIsAddHoldingOpen(false);
+                    setHoldingError(null);
+                  }}
+                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#25313D] disabled:opacity-50 text-zinc-300 rounded font-semibold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-3 py-1.5 bg-[#D6A84F] text-black rounded font-bold"
+                  disabled={isSubmittingHolding}
+                  className="px-3 py-1.5 bg-[#D6A84F] hover:bg-[#D6A84F]/90 disabled:opacity-50 text-black rounded font-bold transition flex items-center gap-1.5"
                 >
-                  Save to Vault
+                  <span>{isSubmittingHolding ? "Saving..." : "Save to Vault"}</span>
                 </button>
               </div>
             </form>
@@ -2441,6 +2659,13 @@ export default function VMDBullionDashboard() {
             <h3 className="text-base font-bold text-white font-mono uppercase text-[#D6A84F]">
               Edit Holding #{editingHolding.id}
             </h3>
+
+            {holdingError && (
+              <div className="p-2.5 rounded bg-rose-950/80 border border-rose-800 text-rose-300 text-xs font-mono">
+                ⚠ {holdingError}
+              </div>
+            )}
+
             <form onSubmit={handleUpdateHolding} className="space-y-4 text-xs font-mono">
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -2455,15 +2680,17 @@ export default function VMDBullionDashboard() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[#8B98A5] mb-1">Purity</label>
+                  <label className="block text-[#8B98A5] mb-1">Purity (Fineness)</label>
                   <input
                     type="number"
                     step="0.001"
                     required
                     value={holdingForm.purity}
                     onChange={(e) => setHoldingForm({ ...holdingForm, purity: e.target.value })}
+                    placeholder="e.g. 0.916 or 0.999"
                     className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
                   />
+                  <span className="text-[10px] text-zinc-500 block mt-0.5">22K / 916 (0.916) or 24K / 999 (0.999)</span>
                 </div>
               </div>
 
@@ -2503,30 +2730,46 @@ export default function VMDBullionDashboard() {
                 </div>
               </div>
 
-              <div>
-                <label className="block text-[#8B98A5] mb-1">Total Cost in INR</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={holdingForm.acquisition_cost_inr}
-                  onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_cost_inr: e.target.value })}
-                  className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[#8B98A5] mb-1">Acquisition Date (Optional)</label>
+                  <input
+                    type="date"
+                    value={holdingForm.acquisition_date}
+                    onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_date: e.target.value })}
+                    className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[#8B98A5] mb-1">Total Cost in INR (Optional)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={holdingForm.acquisition_cost_inr}
+                    onChange={(e) => setHoldingForm({ ...holdingForm, acquisition_cost_inr: e.target.value })}
+                    className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
+                  />
+                </div>
               </div>
 
               <div className="flex justify-end gap-3 pt-3 border-t border-[#25313D]">
                 <button
                   type="button"
-                  onClick={() => setIsEditHoldingOpen(false)}
-                  className="px-3 py-1.5 bg-[#1E293B] text-zinc-300 rounded font-semibold"
+                  disabled={isSubmittingHolding}
+                  onClick={() => {
+                    setIsEditHoldingOpen(false);
+                    setHoldingError(null);
+                  }}
+                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#25313D] disabled:opacity-50 text-zinc-300 rounded font-semibold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-3 py-1.5 bg-[#D6A84F] text-black rounded font-bold"
+                  disabled={isSubmittingHolding}
+                  className="px-3 py-1.5 bg-[#D6A84F] hover:bg-[#D6A84F]/90 disabled:opacity-50 text-black rounded font-bold transition flex items-center gap-1.5"
                 >
-                  Save Changes
+                  <span>{isSubmittingHolding ? "Updating..." : "Save Changes"}</span>
                 </button>
               </div>
             </form>
@@ -2541,7 +2784,29 @@ export default function VMDBullionDashboard() {
             <h3 className="text-base font-bold text-white font-mono uppercase text-[#D6A84F]">
               Create Price Alert
             </h3>
+
+            {alertError && (
+              <div className="p-2.5 rounded bg-rose-950/80 border border-rose-800 text-rose-300 text-xs font-mono">
+                ⚠ {alertError}
+              </div>
+            )}
+
             <form onSubmit={handleCreateAlert} className="space-y-4 text-xs font-mono">
+              <div>
+                <label className="block text-[#8B98A5] mb-1">Target Instrument</label>
+                <select
+                  value={alertForm.target_metric}
+                  onChange={(e) => setAlertForm({ ...alertForm, target_metric: e.target.value })}
+                  className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
+                >
+                  <option value="MJDTA_GOLD_22K">Chennai MJDTA Gold 22K Benchmark (1g)</option>
+                  <option value="GOLD_100G_999">Chennai Gold 100g 999 Fine (1g)</option>
+                  <option value="MJDTA_SILVER">Chennai MJDTA Silver Benchmark (1g)</option>
+                  <option value="KJPL_SPOT_GOLD_USD">KJPL Spot Gold (XAU/USD $/oz)</option>
+                  <option value="KJPL_SPOT_USDINR">KJPL Spot USD/INR (Forex)</option>
+                </select>
+              </div>
+
               <div>
                 <label className="block text-[#8B98A5] mb-1">Condition</label>
                 <select
@@ -2581,16 +2846,21 @@ export default function VMDBullionDashboard() {
               <div className="flex justify-end gap-3 pt-3 border-t border-[#25313D]">
                 <button
                   type="button"
-                  onClick={() => setIsAddAlertOpen(false)}
-                  className="px-3 py-1.5 bg-[#1E293B] text-zinc-300 rounded font-semibold"
+                  disabled={isSubmittingAlert}
+                  onClick={() => {
+                    setIsAddAlertOpen(false);
+                    setAlertError(null);
+                  }}
+                  className="px-3 py-1.5 bg-[#1E293B] hover:bg-[#25313D] disabled:opacity-50 text-zinc-300 rounded font-semibold transition"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-3 py-1.5 bg-[#D6A84F] text-black rounded font-bold"
+                  disabled={isSubmittingAlert}
+                  className="px-3 py-1.5 bg-[#D6A84F] hover:bg-[#D6A84F]/90 disabled:opacity-50 text-black rounded font-bold transition flex items-center gap-1.5"
                 >
-                  Create Alert
+                  <span>{isSubmittingAlert ? "Creating..." : "Create Alert"}</span>
                 </button>
               </div>
             </form>
