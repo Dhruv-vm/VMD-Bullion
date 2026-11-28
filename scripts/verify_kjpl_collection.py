@@ -31,6 +31,7 @@ if str(BACKEND_DIR) not in sys.path:
 from sqlalchemy import select, func
 from app.db.session import SessionLocal
 from app.models.bullion import BullionLatestRate, BullionRateObservation
+from app.services.data_service import get_freshness_details
 
 IST = ZoneInfo("Asia/Kolkata")
 FIVE_CITIES = [
@@ -42,16 +43,9 @@ FIVE_CITIES = [
 ]
 
 
-def classify_freshness(source_pub_at: datetime | None, now_utc: datetime) -> str:
-    if source_pub_at is None:
-        return "UNKNOWN"
-    age_hours = (now_utc - source_pub_at).total_seconds() / 3600.0
-    if age_hours <= 4.0:
-        return "FRESH"
-    elif age_hours <= 24.0:
-        return "DELAYED"
-    else:
-        return "STALE"
+def classify_freshness(source_pub_at: datetime | None, rate_type: str = "RETAIL") -> str:
+    details = get_freshness_details(source_pub_at, rate_type=rate_type)
+    return str(details.get("status", "UNKNOWN"))
 
 
 def verify_collection() -> int:
@@ -89,7 +83,7 @@ def verify_collection() -> int:
             if mjdta_22k.validation_status != "VALID":
                 errors.append(f"MJDTA_GOLD_22K validation status is '{mjdta_22k.validation_status}' (expected VALID).")
 
-            freshness = classify_freshness(mjdta_22k.source_published_at, now_utc)
+            freshness = classify_freshness(mjdta_22k.source_published_at, rate_type=mjdta_22k.rate_type)
             benchmark_results.append({
                 "product_id": mjdta_22k.product_id,
                 "city_code": mjdta_22k.city_code,
@@ -130,7 +124,7 @@ def verify_collection() -> int:
             if row.validation_status != "VALID":
                 errors.append(f"City {city_code} status is '{row.validation_status}' (expected VALID).")
 
-            city_freshness = classify_freshness(row.source_published_at, now_utc)
+            city_freshness = classify_freshness(row.source_published_at, rate_type=row.rate_type)
             city_results.append({
                 "city_code": city_code,
                 "city_name": city_name,
