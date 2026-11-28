@@ -101,6 +101,14 @@ def _serialize_latest_rate(
         "unit": rate_obj.unit,
         "rate_type": rate_obj.rate_type,
         "latest_price": latest_price,
+        "is_active": prod_obj.is_active,
+        "is_legacy_alias": prod_obj.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST"),
+        "deprecation_notice": (
+            "Legacy product identifier. MJDTA quotes 22CT (916) jewellery gold. "
+            "Use canonical MJDTA_GOLD_22K for observed quote, or DERIVED_MJDTA_GOLD_24K for derived 24K retail parity."
+            if prod_obj.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST")
+            else None
+        ),
         "buy_price": float(rate_obj.buy_price) if rate_obj.buy_price is not None else None,
         "previous_price": float(rate_obj.previous_price) if rate_obj.previous_price is not None else None,
         "change_inr": float(rate_obj.change_inr),
@@ -111,8 +119,8 @@ def _serialize_latest_rate(
         "validation_status": rate_obj.validation_status,
         "source_published_at": rate_obj.source_published_at.isoformat() if rate_obj.source_published_at else None,
         "source_updated_time": _format_pub_time_ist(rate_obj.source_published_at),
-        "observed_at": rate_obj.last_collected_at.isoformat(),
-        "last_verified_at": rate_obj.last_verified_at.isoformat(),
+        "observed_at": rate_obj.last_collected_at.isoformat() if rate_obj.last_collected_at else datetime.now(timezone.utc).isoformat(),
+        "last_verified_at": rate_obj.last_verified_at.isoformat() if rate_obj.last_verified_at else datetime.now(timezone.utc).isoformat(),
         "freshness": freshness["status"],
         "age_hours": freshness["age_hours"],
         "age_seconds": freshness["age_seconds"],
@@ -206,6 +214,7 @@ def _read_latest_rates_from_csv() -> list[dict[str, Any]]:
 def get_latest_city_rates(
     city_code: str | None = None,
     metal: str | None = None,
+    include_deprecated: bool = False,
     db: Session | None = None,
 ) -> list[dict[str, Any]]:
     own = False
@@ -226,6 +235,8 @@ def get_latest_city_rates(
             .where(BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]))
             .order_by(BullionCity.sort_order, BullionProduct.metal, BullionProduct.product_name)
         )
+        if not include_deprecated:
+            stmt = stmt.where(BullionProduct.is_active.is_(True))
         if city_code:
             stmt = stmt.where(BullionLatestRate.city_code == normalize_city_code(city_code))
         if metal:
