@@ -45,9 +45,9 @@ def test_mjdta_and_wholesale_recovered_with_cached_city_feeds(monkeypatch):
     assert "MJDTA_GOLD_24K" in prod_ids, "MJDTA_GOLD_24K must be present via fallback"
     assert "GOLD_100G_999" in prod_ids, "GOLD_100G_999 must be present from cache"
 
-    # 4. Generate summary and verify benchmark_gold_24k is not None
+    # 4. Generate summary and verify benchmark_gold_24k is not None (derived or legacy)
     summary = get_bullion_summary(all_rates=rates, db=mock_db)
     assert summary["benchmark_gold_24k"] is not None
-    assert summary["benchmark_gold_24k"]["product_id"] == "MJDTA_GOLD_24K"
+    assert summary["benchmark_gold_24k"]["product_id"] in ("MJDTA_GOLD_24K", "DERIVED_MJDTA_GOLD_24K")
     assert summary["benchmark_gold_24k"]["latest_price"] > 0
     assert len(summary["city_tape"]) >= 2

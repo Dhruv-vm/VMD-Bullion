@@ -111,7 +111,7 @@ def generate_daily_research_report(
             f"- **Protocol / Model:** `{payload['protocol_version']}` / `{payload['model_version']}`",
             f"- **Prospective Shadow Ledger Status:** `{payload['status']}` (Origins logged: `{prosp.get('total_prospective_origins', 0)}`, Matured: `{prosp.get('matured_prospective_origins', 0)}` / `{payload['min_evaluation_samples']}` required)",
             f"- **Backtest Study Status:** `{payload['backtest_status']}`",
-            f"- **Target Instrument:** `MJDTA_GOLD_24K` (`EXCL_GST`, Purity `0.999`, `INR/1g`) from DB `{mjdta_audit.get('source_backend', 'database')}`",
+            f"- **Target Instrument:** `MJDTA_GOLD_22K` (`EXCL_GST`, Purity `0.9160`, `INR/1g`) from DB `{mjdta_audit.get('source_backend', 'database')}`",
             "",
             "## 1. MJDTA DB Series & Collector Health",
             "",

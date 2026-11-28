@@ -221,6 +221,7 @@ def _build_validated_item(
         weight_value=weight,
         price=price,
         source_product_id=source_product_id,
+        purity=purity,
     )
     return ParsedCityRate(
         city_code=city_code,
@@ -659,15 +660,15 @@ def parse_kjpl_all_city_rates(html_content: str, reference_time: datetime | None
                 raw_source_name=raw_name,
             ))
 
-    # 3. MJDTA Gold & Silver Benchmarks (Chennai)
+    # 3. MJDTA Gold & Silver Benchmarks (Chennai) - Canonical 22K (0.9160 BIS fineness)
     if isinstance(mjdta_gold, (int, float)):
         _register(_build_validated_item(
             city_code="CHENNAI",
             city_display_name="Chennai",
-            product_id="MJDTA_GOLD_24K",
-            product_name="MJDTA Gold 24K Pure (Chennai Benchmark)",
+            product_id="MJDTA_GOLD_22K",
+            product_name="MJDTA Gold 22K Benchmark (Excl. GST)",
             metal="GOLD",
-            purity=0.999,
+            purity=0.9160,
             weight=1.0,
             unit="1g",
             rate_type="MJDTA_BENCHMARK",
@@ -680,10 +681,10 @@ def parse_kjpl_all_city_rates(html_content: str, reference_time: datetime | None
         _register(_build_validated_item(
             city_code="CHENNAI",
             city_display_name="Chennai",
-            product_id="MJDTA_GOLD_24K_GST",
-            product_name="MJDTA Gold 24K (With 3% GST)",
+            product_id="MJDTA_GOLD_22K_GST",
+            product_name="MJDTA Gold 22K Benchmark (With 3% GST)",
             metal="GOLD",
-            purity=0.999,
+            purity=0.9160,
             weight=1.0,
             unit="1g",
             rate_type="MJDTA_BENCHMARK",

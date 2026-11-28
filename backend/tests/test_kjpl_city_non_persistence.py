@@ -182,7 +182,7 @@ def test_req4_mjdta_and_lbma_persistence_remains_unchanged(non_persistent_test_d
 
     # MJDTA benchmark observations persisted to DB
     gold_mjdta = session.query(BullionLatestRate).filter_by(
-        city_code="CHENNAI", product_id="MJDTA_GOLD_24K"
+        city_code="CHENNAI", product_id="MJDTA_GOLD_22K"
     ).one()
     assert float(gold_mjdta.latest_price) == 13015.0
     assert gold_mjdta.rate_type == "MJDTA_BENCHMARK"

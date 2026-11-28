@@ -76,8 +76,12 @@ interface BullionCity {
 interface BullionSummaryResponse {
   terminal_title: string;
   default_city: string;
+  benchmark_gold_22k?: CityRateItem | null;
+  benchmark_gold_22k_gst?: CityRateItem | null;
+  derived_gold_24k?: (CityRateItem & { is_derived?: boolean; derivation_formula?: string; warning?: string }) | null;
   benchmark_gold_24k: CityRateItem | null;
   benchmark_silver: CityRateItem | null;
+  benchmark_silver_gst?: CityRateItem | null;
   wholesale_gold_1kg: CityRateItem | null;
   city_tape: Array<{
     city_code: string;
@@ -105,6 +109,10 @@ interface BullionSummaryResponse {
     raw_spot_inr_per_gram: number;
     domestic_vs_spot_spread_inr: number | null;
     domestic_vs_spot_spread_pct: number | null;
+    derived_retail_parity_spread_inr?: number | null;
+    derived_retail_parity_spread_pct?: number | null;
+    wholesale_vs_spot_spread_inr?: number | null;
+    wholesale_vs_spot_spread_pct?: number | null;
     market_freshness: string;
     note?: string;
   } | null;
@@ -838,31 +846,52 @@ export default function VMDBullionDashboard() {
               <div className="space-y-6">
                 {/* Hero 4-card Benchmark Strip */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {/* Card 1: Chennai MJDTA Gold 24K */}
+                  {/* Card 1: Chennai MJDTA Gold 22K (with Derived 24K Retail Parity) */}
                   <div className="bg-[#111820] border border-[#25313D] rounded-lg p-4 relative overflow-hidden group hover:border-[#D6A84F]/40 transition">
                     <div className="flex justify-between items-start mb-2">
                       <div>
                         <div className="text-[10px] font-mono uppercase text-[#D6A84F] font-bold tracking-wider">
                           PRIMARY INDIAN BENCHMARK
                         </div>
-                        <h3 className="text-sm font-semibold text-white">Chennai MJDTA Gold 24K</h3>
+                        <h3 className="text-sm font-semibold text-white">Chennai MJDTA Gold 22K (916)</h3>
                       </div>
-                      {getFreshnessBadge(bullionSummary?.benchmark_gold_24k?.freshness)}
+                      {getFreshnessBadge(
+                        bullionSummary?.benchmark_gold_22k?.freshness ||
+                        bullionSummary?.benchmark_gold_24k?.freshness
+                      )}
                     </div>
 
                     <div className="mt-3 flex items-baseline gap-2">
                       <span className="text-2xl sm:text-3xl font-mono font-bold text-white tracking-tight">
-                        ₹{formatINR(bullionSummary?.benchmark_gold_24k?.latest_price)}
+                        ₹{formatINR(
+                          bullionSummary?.benchmark_gold_22k?.latest_price ||
+                          bullionSummary?.benchmark_gold_24k?.latest_price
+                        )}
                       </span>
-                      <span className="text-xs font-mono text-[#8B98A5]">/ gram</span>
+                      <span className="text-xs font-mono text-[#8B98A5]">/ gram (22K)</span>
                     </div>
 
-                    <div className="mt-2 text-xs font-mono text-zinc-400 flex items-center justify-between border-t border-[#25313D]/60 pt-2">
-                      <span>With 3% GST:</span>
+                    {bullionSummary?.derived_gold_24k && (
+                      <div className="mt-2 text-xs font-mono text-zinc-400 flex items-center justify-between border-t border-[#25313D]/60 pt-2">
+                        <span className="flex items-center gap-1.5">
+                          <span>Derived 24K Parity:</span>
+                          <span className="text-[9px] px-1 py-0.2 bg-emerald-950/80 text-emerald-400 rounded border border-emerald-800/40 font-mono">
+                            0.9160
+                          </span>
+                        </span>
+                        <span className="text-emerald-400 font-semibold">
+                          ₹{formatINR(bullionSummary.derived_gold_24k.latest_price)}/g
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="mt-1 text-xs font-mono text-zinc-400 flex items-center justify-between">
+                      <span>With 3% GST (22K):</span>
                       <span className="text-white font-semibold">
                         ₹
                         {formatINR(
-                          (bullionSummary?.benchmark_gold_24k?.latest_price || 0) * 1.03
+                          bullionSummary?.benchmark_gold_22k_gst?.latest_price ||
+                          ((bullionSummary?.benchmark_gold_22k?.latest_price || bullionSummary?.benchmark_gold_24k?.latest_price || 0) * 1.03)
                         )}
                         /g
                       </span>
@@ -870,7 +899,7 @@ export default function VMDBullionDashboard() {
 
                     <div className="mt-2 flex items-center justify-between text-[10px] font-mono text-zinc-500">
                       <span>Source: KJPL MJDTA</span>
-                      <span>Pub: {bullionSummary?.benchmark_gold_24k?.source_updated_time || "N/A"}</span>
+                      <span>Pub: {bullionSummary?.benchmark_gold_22k?.source_updated_time || bullionSummary?.benchmark_gold_24k?.source_updated_time || "N/A"}</span>
                     </div>
                   </div>
 
@@ -1655,23 +1684,34 @@ export default function VMDBullionDashboard() {
                       Verified KJPL Spot Conversion (No Unverified Duty Assumptions):
                     </h4>
                     <p className="text-zinc-400 text-[11px] leading-relaxed">
-                      1. Raw Spot INR/g = <code className="text-white">(KJPL SPOT-GOLD &times; KJPL SPOT-INR) / 31.1034768</code> ={" "}
+                      1. Raw Spot Conversion (USD to INR/g @ 24K pure fine gold) ={" "}
                       <strong className="text-white">
                         ₹{formatINR(bullionSummary?.parity?.raw_spot_inr_per_gram)}/g
                       </strong>
                     </p>
                     <p className="text-zinc-400 text-[11px] leading-relaxed">
-                      2. Domestic Reference Rate (Chennai MJDTA) ={" "}
+                      2. Chennai MJDTA 22K Retail Benchmark ={" "}
                       <strong className="text-white">
-                        ₹{formatINR(bullionSummary?.benchmark_gold_24k?.latest_price)}/g
-                      </strong>
+                        ₹{formatINR(bullionSummary?.benchmark_gold_22k?.latest_price || bullionSummary?.benchmark_gold_24k?.latest_price)}/g
+                      </strong>{" "}
+                      (Derived 24K Parity: ₹{formatINR(bullionSummary?.derived_gold_24k?.latest_price)}/g)
                     </p>
                     <p className="text-zinc-400 text-[11px] leading-relaxed">
-                      3. Raw Domestic vs Spot Spread (reflecting customs, GST, and local market premium combined) ={" "}
+                      3. Derived Retail 24K vs Spot Spread (reflecting customs, landed cost, local retail markup) ={" "}
                       <strong className="text-[#D6A84F]">
-                        ₹{formatINR(bullionSummary?.parity?.domestic_vs_spot_spread_inr)}/g
-                      </strong>
+                        ₹{formatINR(bullionSummary?.parity?.derived_retail_parity_spread_inr ?? bullionSummary?.parity?.domestic_vs_spot_spread_inr)}/g
+                      </strong>{" "}
+                      ({bullionSummary?.parity?.derived_retail_parity_spread_pct ?? bullionSummary?.parity?.domestic_vs_spot_spread_pct}%)
                     </p>
+                    {bullionSummary?.wholesale_gold_1kg && (
+                      <p className="text-zinc-400 text-[11px] leading-relaxed">
+                        4. Wholesale 1KG 99.99 Bar vs Spot Spread ={" "}
+                        <strong className="text-emerald-400">
+                          ₹{formatINR(bullionSummary?.parity?.wholesale_vs_spot_spread_inr)}/g
+                        </strong>{" "}
+                        ({bullionSummary?.parity?.wholesale_vs_spot_spread_pct}%)
+                      </p>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1828,16 +1868,19 @@ export default function VMDBullionDashboard() {
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-xs">
                     <div className="p-4 rounded bg-[#0D1218] border border-[#25313D] space-y-2">
-                      <span className="text-[#8B98A5] text-[10px] block">DOMESTIC GOLD/SILVER RATIO</span>
+                      <span className="text-[#8B98A5] text-[10px] block">DOMESTIC GOLD/SILVER RATIO (24K EQUIV)</span>
                       <span className="text-2xl font-bold text-white">
                         {(
-                          (bullionSummary?.benchmark_gold_24k?.latest_price || 0) /
+                          (bullionSummary?.derived_gold_24k?.latest_price ||
+                            bullionSummary?.benchmark_gold_22k?.latest_price ||
+                            bullionSummary?.benchmark_gold_24k?.latest_price ||
+                            0) /
                           (bullionSummary?.benchmark_silver?.latest_price || 1)
                         ).toFixed(2)}
                         : 1
                       </span>
                       <span className="text-[10px] text-zinc-500 block">
-                        Grams of Silver per Gram of Gold (India)
+                        Grams of Pure Silver per Gram of Pure Gold
                       </span>
                     </div>
 

@@ -231,12 +231,13 @@ def parse_kjpl_html(html: str) -> KJPLRate:
         raise ValueError("KJPL MJDTA gold rate not found. The website structure may have changed.")
 
     gold_val = validate_bullion_observation(
-        product_id="MJDTA_GOLD_24K",
+        product_id="MJDTA_GOLD_22K",
         metal="GOLD",
         currency="INR",
         unit="1g",
         weight_value=1.0,
         price=float(gold_mjdta),
+        purity=0.9160,
     )
     if gold_val.validation_status == "QUARANTINED":
         raise ValueError(f"Invalid KJPL MJDTA gold rate: {gold_val.reason}")

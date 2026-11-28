@@ -1,30 +1,147 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 from sqlalchemy import select, delete
 
 from app.db.session import SessionLocal, engine
 from app.db.base import Base
 from app.models.portfolio import PortfolioHolding
+from app.models.bullion import BullionLatestRate
 from app.services.data_service import get_latest_kjpl_from_csv, init_database
 
 
+def get_all_benchmark_rates() -> dict[str, float | None]:
+    """Retrieve verified precious metal benchmark rates in INR per gram."""
+    rates = {
+        "mjdta_22k": None,
+        "derived_24k": None,
+        "wholesale_1kg": None,
+        "silver_999": None,
+    }
+    with SessionLocal() as db:
+        try:
+            mjdta_row = db.execute(
+                select(BullionLatestRate)
+                .where(
+                    BullionLatestRate.city_code == "CHENNAI",
+                    BullionLatestRate.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
+                    BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]),
+                )
+                .order_by(BullionLatestRate.product_id == "MJDTA_GOLD_22K")
+            ).scalars().first()
+            if mjdta_row and mjdta_row.latest_price:
+                rates["mjdta_22k"] = float(mjdta_row.latest_price)
+                rates["derived_24k"] = round(float(Decimal(str(mjdta_row.latest_price)) / Decimal("0.9160")), 2)
+
+            ws_row = db.execute(
+                select(BullionLatestRate)
+                .where(
+                    BullionLatestRate.product_id == "GOLD_1KG_9999",
+                    BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]),
+                )
+            ).scalars().first()
+            if ws_row and ws_row.latest_price:
+                rates["wholesale_1kg"] = float(ws_row.latest_price)
+
+            silver_row = db.execute(
+                select(BullionLatestRate)
+                .where(
+                    BullionLatestRate.product_id == "MJDTA_SILVER",
+                    BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]),
+                )
+            ).scalars().first()
+            if silver_row and silver_row.latest_price:
+                rates["silver_999"] = float(silver_row.latest_price)
+        except Exception:
+            pass
+
+    # Fallback to CSV if database snapshot unavailable
+    if rates["mjdta_22k"] is None:
+        kjpl = get_latest_kjpl_from_csv()
+        if kjpl and kjpl.get("gold_mjdta"):
+            rates["mjdta_22k"] = float(kjpl["gold_mjdta"])
+            rates["derived_24k"] = round(float(Decimal(str(kjpl["gold_mjdta"])) / Decimal("0.9160")), 2)
+            if kjpl.get("silver_mjdta"):
+                rates["silver_999"] = float(kjpl["silver_mjdta"])
+
+    return rates
+
+
 def get_current_benchmark_rates() -> tuple[float | None, float | None]:
-    """Retrieve current verified KJPL gold and silver benchmark rates in INR per gram (None if unavailable)."""
-    kjpl = get_latest_kjpl_from_csv()
-    if kjpl:
-        gold_rate = float(kjpl["gold_mjdta"]) if kjpl.get("gold_mjdta") is not None else None
-        silver_rate = float(kjpl["silver_mjdta"]) if kjpl.get("silver_mjdta") is not None else None
-        return gold_rate, silver_rate
-    return None, None
+    """Retrieve current verified KJPL gold and silver benchmark rates (tuple for backward compatibility)."""
+    rates = get_all_benchmark_rates()
+    return rates["mjdta_22k"], rates["silver_999"]
+
+
+def calculate_holding_valuation(
+    metal_type: str,
+    product_name: str,
+    gross_weight_grams: float | Decimal,
+    purity: float | Decimal,
+    quantity: int,
+    rates: dict[str, float | None],
+) -> tuple[float, str, float | None, float]:
+    """
+    Computes holding valuation according to explicit asset benchmark rules.
+    Section 6:
+      - 22K jewellery -> Observed MJDTA 22K (IS 1417:2019 fineness 0.9160)
+      - 24K retail coins/bars -> Derived 24K retail equivalent (0.9990 fineness)
+      - Institutional 1KG bars -> Wholesale 1KG 99.99 rate (0.9999 fineness)
+      - Silver items -> Observed 999 silver benchmark (0.9990 fineness)
+    Returns: (current_valuation_inr, valuation_basis, rate_per_gram_used, benchmark_purity_used)
+    """
+    metal = metal_type.upper()
+    gross_dec = Decimal(str(gross_weight_grams))
+    purity_dec = Decimal(str(purity))
+    qty = quantity
+
+    if metal == "SILVER":
+        silver_rate = rates.get("silver_999")
+        if silver_rate is None:
+            return 0.0, "MJDTA_SILVER_999", None, 0.9990
+        bench_rate_dec = Decimal(str(silver_rate))
+        bench_purity = Decimal("0.9990")
+        val = (gross_dec * (purity_dec / bench_purity) * bench_rate_dec * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(val), "MJDTA_SILVER_999", silver_rate, 0.9990
+
+    # Metal is GOLD
+    pname_upper = (product_name or "").upper()
+    is_institutional_bar = ("1KG" in pname_upper or "WHOLESALE" in pname_upper or "INSTITUTIONAL" in pname_upper) and gross_dec >= Decimal("900.0")
+
+    if is_institutional_bar and rates.get("wholesale_1kg"):
+        ws_rate = rates["wholesale_1kg"]
+        bench_rate_dec = Decimal(str(ws_rate))
+        bench_purity = Decimal("0.9999")
+        val = (gross_dec * (purity_dec / bench_purity) * bench_rate_dec * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(val), "WHOLESALE_1KG_9999", ws_rate, 0.9999
+
+    if purity_dec <= Decimal("0.9200"):
+        # 22K jewellery, 18K, 14K -> benchmark against observed MJDTA 22K
+        mjdta_rate = rates.get("mjdta_22k")
+        if mjdta_rate is None:
+            return 0.0, "MJDTA_GOLD_22K", None, 0.9160
+        bench_rate_dec = Decimal(str(mjdta_rate))
+        bench_purity = Decimal("0.9160")
+        val = (gross_dec * (purity_dec / bench_purity) * bench_rate_dec * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        return float(val), "MJDTA_GOLD_22K", mjdta_rate, 0.9160
+
+    # 24K retail coins, bars, fine gold (purity > 0.9200) -> benchmark against Derived 24K Retail Equivalent
+    derived_rate = rates.get("derived_24k")
+    if derived_rate is None:
+        return 0.0, "DERIVED_24K_RETAIL", None, 0.9990
+    bench_rate_dec = Decimal(str(derived_rate))
+    bench_purity = Decimal("0.9990")
+    val = (gross_dec * (purity_dec / bench_purity) * bench_rate_dec * qty).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(val), "DERIVED_24K_RETAIL", derived_rate, 0.9990
 
 
 class PortfolioService:
     @staticmethod
     def list_holdings(user_id: str = "default_user") -> list[dict[str, Any]]:
         init_database()
-        gold_rate, silver_rate = get_current_benchmark_rates()
+        benchmark_rates = get_all_benchmark_rates()
 
         with SessionLocal() as session:
             stmt = (
@@ -36,23 +153,23 @@ class PortfolioService:
 
             results = []
             for h in holdings:
-                metal = h.metal_type.upper()
                 purity_f = float(h.purity)
                 gross_f = float(h.gross_weight_grams)
                 fine_f = float(h.fine_weight_grams)
                 acq_cost_f = float(h.acquisition_cost_inr) if h.acquisition_cost_inr is not None else None
-                rate_per_gram = gold_rate if metal == "GOLD" else silver_rate
 
-                benchmark_purity = 0.999
-                current_valuation = (
-                    round(gross_f * (purity_f / benchmark_purity) * rate_per_gram * h.quantity, 2)
-                    if rate_per_gram is not None
-                    else 0.0
+                current_valuation, basis, rate_used, bench_purity = calculate_holding_valuation(
+                    metal_type=h.metal_type,
+                    product_name=h.product_name,
+                    gross_weight_grams=h.gross_weight_grams,
+                    purity=h.purity,
+                    quantity=h.quantity,
+                    rates=benchmark_rates,
                 )
 
                 gain_loss_inr = None
                 gain_loss_pct = None
-                if acq_cost_f is not None and acq_cost_f > 0 and rate_per_gram is not None:
+                if acq_cost_f is not None and acq_cost_f > 0 and rate_used is not None:
                     total_cost = acq_cost_f * h.quantity
                     gain_loss_inr = round(current_valuation - total_cost, 2)
                     gain_loss_pct = round((gain_loss_inr / total_cost) * 100, 2)
@@ -69,7 +186,10 @@ class PortfolioService:
                     "acquisition_date": h.acquisition_date,
                     "acquisition_cost_inr": acq_cost_f,
                     "current_valuation_inr": current_valuation,
-                    "valuation_available": rate_per_gram is not None,
+                    "valuation_basis": basis,
+                    "benchmark_rate_used": rate_used,
+                    "benchmark_purity_used": bench_purity,
+                    "valuation_available": rate_used is not None,
                     "unrealized_gain_loss_inr": gain_loss_inr,
                     "unrealized_gain_loss_pct": gain_loss_pct,
                     "notes": h.notes,
@@ -202,7 +322,8 @@ class PortfolioService:
     def get_historical_valuation(user_id: str = "default_user") -> list[dict[str, Any]]:
         """
         Evaluate user's current holdings across historical KJPL rate events.
-        Produces an auditable time-series of historical portfolio valuations.
+        Produces an auditable time-series of historical portfolio valuations using
+        asset-specific benchmark fineness standards.
         """
         init_database()
         holdings = PortfolioService.list_holdings(user_id=user_id)
@@ -220,30 +341,42 @@ class PortfolioService:
         history = []
         for row in kjpl_records:
             try:
-                gold_rate = float(row["gold_mjdta"])
+                mjdta_22k_rate = float(row["gold_mjdta"])
+                derived_24k_rate = round(float(Decimal(str(mjdta_22k_rate)) / Decimal("0.9160")), 2)
                 silver_rate = float(row["silver_mjdta"]) if row.get("silver_mjdta") else None
                 obs_date = row.get("observed_at", "")[:10]
+
+                rates = {
+                    "mjdta_22k": mjdta_22k_rate,
+                    "derived_24k": derived_24k_rate,
+                    "wholesale_1kg": None,
+                    "silver_999": silver_rate,
+                }
 
                 total_val = 0.0
                 gold_val = 0.0
                 silver_val = 0.0
 
                 for h in holdings:
-                    qty = h["quantity"]
-                    benchmark_purity = 0.999
+                    val, basis, rate_used, _ = calculate_holding_valuation(
+                        metal_type=h["metal_type"],
+                        product_name=h["product_name"],
+                        gross_weight_grams=h["gross_weight_grams"],
+                        purity=h["purity"],
+                        quantity=h["quantity"],
+                        rates=rates,
+                    )
+                    total_val += val
                     if h["metal_type"] == "GOLD":
-                        val = round(h["gross_weight_grams"] * (h["purity"] / benchmark_purity) * gold_rate * qty, 2)
                         gold_val += val
-                        total_val += val
-                    elif silver_rate is not None:
-                        val = round(h["gross_weight_grams"] * (h["purity"] / benchmark_purity) * silver_rate * qty, 2)
+                    else:
                         silver_val += val
-                        total_val += val
 
                 history.append({
                     "date": obs_date,
                     "observed_at": row.get("observed_at"),
-                    "gold_rate_inr": gold_rate,
+                    "gold_rate_inr": mjdta_22k_rate,
+                    "derived_24k_inr": derived_24k_rate,
                     "silver_rate_inr": silver_rate,
                     "total_valuation_inr": round(total_val, 2),
                     "gold_valuation_inr": round(gold_val, 2),
@@ -257,7 +390,7 @@ class PortfolioService:
     @staticmethod
     def get_portfolio_summary(user_id: str = "default_user") -> dict[str, Any]:
         holdings = PortfolioService.list_holdings(user_id=user_id)
-        gold_rate, silver_rate = get_current_benchmark_rates()
+        benchmark_rates = get_all_benchmark_rates()
 
         gold_gross = 0.0
         gold_fine = 0.0
@@ -320,9 +453,12 @@ class PortfolioService:
             "unrealized_gain_loss_inr": total_gain_loss,
             "unrealized_gain_loss_pct": total_gain_loss_pct,
             "benchmark_rates": {
-                "gold_mjdta_inr_per_gram": gold_rate,
-                "silver_mjdta_inr_per_gram": silver_rate,
+                "gold_mjdta_22k_inr_per_gram": benchmark_rates.get("mjdta_22k"),
+                "derived_gold_24k_inr_per_gram": benchmark_rates.get("derived_24k"),
+                "wholesale_gold_1kg_inr_per_gram": benchmark_rates.get("wholesale_1kg"),
+                "silver_mjdta_inr_per_gram": benchmark_rates.get("silver_999"),
+                "gold_mjdta_inr_per_gram": benchmark_rates.get("mjdta_22k"),
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "disclaimer": "Valuation is estimated using Madras Jewellers and Diamond Traders Association (MJDTA) benchmark rates. Physical bullion buyback rates typically trade at a local dealer spread.",
+                "disclaimer": "Valuation is estimated using Madras Jewellers and Diamond Traders Association (MJDTA) 22K benchmark rates and derived 24K retail parity. Physical bullion buyback rates typically trade at a local dealer spread.",
             },
         }

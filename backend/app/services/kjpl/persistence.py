@@ -41,20 +41,22 @@ DEFAULT_CITIES = [
 ]
 
 DEFAULT_PRODUCTS = [
-    {"product_id": "GOLD_100G_999", "product_name": "KJPL Gold 100 GMS 999 City Benchmark (Quoted 1g)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "RETAIL", "source_product_id": "48-52"},
-    {"product_id": "GOLD_1KG_9999", "product_name": "KJPL Gold 1KG 99.99 Pure Bar (Quoted 1g)", "metal": "GOLD", "purity": Decimal("0.9999"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "WHOLESALE", "source_product_id": "47"},
-    {"product_id": "MJDTA_GOLD_24K", "product_name": "MJDTA Gold 24K Benchmark (Excl. GST)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD"},
-    {"product_id": "MJDTA_GOLD_24K_GST", "product_name": "MJDTA Gold 24K Benchmark (With 3% GST)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD_GST"},
-    {"product_id": "MJDTA_SILVER", "product_name": "MJDTA Silver Benchmark (Excl. GST)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "2"},
-    {"product_id": "SILVER_1KG_999", "product_name": "Silver 1KG 999 Bar", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1kg", "rate_type": "RETAIL", "source_product_id": "12"},
-    {"product_id": "KJPL_GOLDDEC_INR_10G", "product_name": "KJPL Gold Contract (10g)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("10.0000"), "unit": "10g", "rate_type": "KJPL_LIVE", "source_product_id": "GOLDDEC"},
-    {"product_id": "KJPL_SILVERDEC_INR_1KG", "product_name": "KJPL Silver Contract (1kg)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1kg", "rate_type": "KJPL_LIVE", "source_product_id": "SILVERDEC"},
-    {"product_id": "KJPL_SPOT_GOLD_USD", "product_name": "KJPL Spot Gold ($/oz)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-GOLD"},
-    {"product_id": "KJPL_SPOT_SILVER_USD", "product_name": "KJPL Spot Silver ($/oz)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-SILVER"},
-    {"product_id": "KJPL_SPOT_USDINR", "product_name": "KJPL Spot USD/INR", "metal": "FX", "purity": Decimal("1.0000"), "weight": Decimal("1.0000"), "unit": "USD", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-INR"},
-    {"product_id": "LBMA_GOLD_AM_USD", "product_name": "LBMA London Gold AM Fix ($/oz)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_GOLD_AM"},
-    {"product_id": "LBMA_GOLD_PM_USD", "product_name": "LBMA London Gold PM Fix ($/oz)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_GOLD_PM"},
-    {"product_id": "LBMA_SILVER_USD", "product_name": "LBMA London Silver Fix ($/oz)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_SILVER"},
+    {"product_id": "GOLD_100G_999", "product_name": "KJPL Gold 100 GMS 999 City Benchmark (Quoted 1g)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "RETAIL", "source_product_id": "48-52", "is_active": True},
+    {"product_id": "GOLD_1KG_9999", "product_name": "KJPL Gold 1KG 99.99 Pure Bar (Quoted 1g)", "metal": "GOLD", "purity": Decimal("0.9999"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "WHOLESALE", "source_product_id": "47", "is_active": True},
+    {"product_id": "MJDTA_GOLD_22K", "product_name": "MJDTA Gold 22K Benchmark (Excl. GST)", "metal": "GOLD", "purity": Decimal("0.9160"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD", "is_active": True},
+    {"product_id": "MJDTA_GOLD_22K_GST", "product_name": "MJDTA Gold 22K Benchmark (With 3% GST)", "metal": "GOLD", "purity": Decimal("0.9160"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD_GST", "is_active": True},
+    {"product_id": "MJDTA_GOLD_24K", "product_name": "[DEPRECATED] MJDTA Gold 24K Benchmark (Excl. GST)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD", "is_active": False},
+    {"product_id": "MJDTA_GOLD_24K_GST", "product_name": "[DEPRECATED] MJDTA Gold 24K Benchmark (With 3% GST)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "MJDTA_GOLD_GST", "is_active": False},
+    {"product_id": "MJDTA_SILVER", "product_name": "MJDTA Silver Benchmark (Excl. GST)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1g", "rate_type": "MJDTA_BENCHMARK", "source_product_id": "2", "is_active": True},
+    {"product_id": "SILVER_1KG_999", "product_name": "Silver 1KG 999 Bar", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1kg", "rate_type": "RETAIL", "source_product_id": "12", "is_active": True},
+    {"product_id": "KJPL_GOLDDEC_INR_10G", "product_name": "KJPL Gold Contract (10g)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("10.0000"), "unit": "10g", "rate_type": "KJPL_LIVE", "source_product_id": "GOLDDEC", "is_active": True},
+    {"product_id": "KJPL_SILVERDEC_INR_1KG", "product_name": "KJPL Silver Contract (1kg)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "1kg", "rate_type": "KJPL_LIVE", "source_product_id": "SILVERDEC", "is_active": True},
+    {"product_id": "KJPL_SPOT_GOLD_USD", "product_name": "KJPL Spot Gold ($/oz)", "metal": "GOLD", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-GOLD", "is_active": True},
+    {"product_id": "KJPL_SPOT_SILVER_USD", "product_name": "KJPL Spot Silver ($/oz)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-SILVER", "is_active": True},
+    {"product_id": "KJPL_SPOT_USDINR", "product_name": "KJPL Spot USD/INR", "metal": "FX", "purity": Decimal("1.0000"), "weight": Decimal("1.0000"), "unit": "USD", "rate_type": "KJPL_LIVE", "source_product_id": "SPOT-INR", "is_active": True},
+    {"product_id": "LBMA_GOLD_AM_USD", "product_name": "LBMA London Gold AM Fix ($/oz)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_GOLD_AM", "is_active": True},
+    {"product_id": "LBMA_GOLD_PM_USD", "product_name": "LBMA London Gold PM Fix ($/oz)", "metal": "GOLD", "purity": Decimal("0.9950"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_GOLD_PM", "is_active": True},
+    {"product_id": "LBMA_SILVER_USD", "product_name": "LBMA London Silver Fix ($/oz)", "metal": "SILVER", "purity": Decimal("0.9990"), "weight": Decimal("1.0000"), "unit": "oz", "rate_type": "LBMA_FIX", "source_product_id": "LBMA_SILVER", "is_active": True},
 ]
 
 
@@ -110,7 +112,7 @@ def seed_bullion_metadata(session: Any = None, *, ensure_schema: bool = False) -
                     unit=p["unit"],
                     rate_type=p["rate_type"],
                     source_product_id=p.get("source_product_id"),
-                    is_active=True,
+                    is_active=p.get("is_active", True),
                 ))
             else:
                 # Repair legacy prototype metadata only if any field actually differs (runtime role has SELECT-only on metadata)
@@ -122,6 +124,7 @@ def seed_bullion_metadata(session: Any = None, *, ensure_schema: bool = False) -
                     or existing.unit != p["unit"]
                     or existing.rate_type != p["rate_type"]
                     or existing.source_product_id != p.get("source_product_id")
+                    or existing.is_active != p.get("is_active", True)
                 ):
                     existing.product_name = p["product_name"]
                     existing.metal = p["metal"]
@@ -130,6 +133,7 @@ def seed_bullion_metadata(session: Any = None, *, ensure_schema: bool = False) -
                     existing.unit = p["unit"]
                     existing.rate_type = p["rate_type"]
                     existing.source_product_id = p.get("source_product_id")
+                    existing.is_active = p.get("is_active", True)
 
         for source_key in ("KJPL_MJDTA", "KJPL_LIVE", "KJPL"):
             ds = session.execute(

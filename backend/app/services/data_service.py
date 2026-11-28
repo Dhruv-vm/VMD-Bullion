@@ -170,13 +170,18 @@ def _get_latest_kjpl_from_db() -> dict[str, Any] | None:
     """Query MJDTA Gold & Silver strictly from validated BullionLatestRate / BullionRateObservation."""
     db = SessionLocal()
     try:
+        # Prioritize canonical MJDTA_GOLD_22K, fallback to legacy MJDTA_GOLD_24K
         gold_row = db.execute(
-            select(BullionLatestRate).where(
+            select(BullionLatestRate)
+            .where(
                 BullionLatestRate.city_code == "CHENNAI",
-                BullionLatestRate.product_id == "MJDTA_GOLD_24K",
+                BullionLatestRate.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
                 BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]),
             )
-        ).scalar_one_or_none()
+            .order_by(
+                BullionLatestRate.product_id == "MJDTA_GOLD_22K",
+            )
+        ).scalars().first()
         if gold_row is None:
             return None
 

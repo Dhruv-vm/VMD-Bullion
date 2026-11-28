@@ -130,7 +130,7 @@ def test_regression_corruption_quarantine_rules():
     </body></html>
     """
     parsed = parse_kjpl_all_city_rates(contaminated_html)
-    mjdta_gold = [r for r in parsed.city_rates if r.product_id == "MJDTA_GOLD_24K"]
+    mjdta_gold = [r for r in parsed.city_rates if r.product_id == "MJDTA_GOLD_22K"]
     assert len(mjdta_gold) == 1
     assert mjdta_gold[0].price == 13015.0
     lbma_silver = [r for r in parsed.city_rates if r.product_id == "LBMA_SILVER_USD"]

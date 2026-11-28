@@ -56,10 +56,10 @@ def _mjdta_rate(price: float) -> ParsedCityRate:
     return ParsedCityRate(
         city_code="CHENNAI",
         city_display_name="Chennai",
-        product_id="MJDTA_GOLD_24K",
-        product_name="MJDTA Gold 24K Pure (Chennai Benchmark)",
+        product_id="MJDTA_GOLD_22K",
+        product_name="MJDTA Gold 22K (Chennai Benchmark)",
         metal="GOLD",
-        purity=0.999,
+        purity=0.9160,
         weight=1.0,
         unit="1g",
         rate_type="MJDTA_BENCHMARK",
@@ -96,7 +96,7 @@ def _valid_mjdta_rows(session):
 
     return session.execute(
         select(BullionRateObservation).where(
-            BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+            BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
             BullionRateObservation.validation_status == "VALID",
         )
     ).scalars().all()

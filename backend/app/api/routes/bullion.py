@@ -79,7 +79,7 @@ def get_bullion_city_comparison(db: Session = Depends(get_db)) -> dict[str, Any]
 @router.get("/history")
 def get_bullion_observations_history(
     city: str | None = Query(None, description="City code (e.g. CHENNAI, BENGALURU)"),
-    product_id: str | None = Query(None, description="Product ID (e.g. GOLD_100G_999, MJDTA_GOLD_24K)"),
+    product_id: str | None = Query(None, description="Product ID (e.g. GOLD_100G_999, MJDTA_GOLD_22K, MJDTA_GOLD_24K)"),
     limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     include_quarantined: bool = Query(False, description="Include quarantined rows for auditing"),

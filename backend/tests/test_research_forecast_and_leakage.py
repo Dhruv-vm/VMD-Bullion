@@ -114,8 +114,8 @@ def test_f01_new2_new3_mjdta_publication_continuity_and_strict_isolation(tmp_pat
             for d, p in enumerate(prices):
                 t = t0 + timedelta(days=d)
                 item = _build_validated_item(
-                    city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_24K",
-                    product_name="MJDTA Gold 24K", metal="GOLD", purity=0.999, weight=1.0, unit="1g",
+                    city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_22K",
+                    product_name="MJDTA Gold 22K", metal="GOLD", purity=0.9160, weight=1.0, unit="1g",
                     rate_type="MJDTA_BENCHMARK", price=float(p), currency="INR",
                     source_product_id="MJDTA_GOLD", raw_source_name="MJDTA GOLD (Without GST)",
                 )
@@ -130,8 +130,8 @@ def test_f01_new2_new3_mjdta_publication_continuity_and_strict_isolation(tmp_pat
             # Repeat polling of the EXACT same day-19 publication must NOT duplicate the observation
             t_dup = t0 + timedelta(days=19)
             dup_item = _build_validated_item(
-                city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_24K",
-                product_name="MJDTA Gold 24K", metal="GOLD", purity=0.999, weight=1.0, unit="1g",
+                city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_22K",
+                product_name="MJDTA Gold 22K", metal="GOLD", purity=0.9160, weight=1.0, unit="1g",
                 rate_type="MJDTA_BENCHMARK", price=13170.0, currency="INR",
                 source_product_id="MJDTA_GOLD", raw_source_name="MJDTA GOLD (Without GST)",
             )
@@ -154,8 +154,8 @@ def test_f01_new2_new3_mjdta_publication_continuity_and_strict_isolation(tmp_pat
             # NEW-3: Inject plausible ALL_INDIA contamination record (source_product_id='GOLD', Rs 13431.20)
             t_contam = t0 + timedelta(days=19, hours=6)
             contam_item = _build_validated_item(
-                city_code="ALL_INDIA", city_display_name="All India", product_id="MJDTA_GOLD_24K",
-                product_name="MJDTA Gold 24K", metal="GOLD", purity=0.999, weight=1.0, unit="1g",
+                city_code="ALL_INDIA", city_display_name="All India", product_id="MJDTA_GOLD_22K",
+                product_name="MJDTA Gold 22K", metal="GOLD", purity=0.9160, weight=1.0, unit="1g",
                 rate_type="MJDTA_BENCHMARK", price=13431.20, currency="INR",
                 source_product_id="GOLD", raw_source_name="GOLD",
             )
@@ -176,8 +176,8 @@ def test_f01_new2_new3_mjdta_publication_continuity_and_strict_isolation(tmp_pat
 
             # Missing source_published_at on MJDTA must quarantine rather than fabricate publication
             missing_ts_item = _build_validated_item(
-                city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_24K",
-                product_name="MJDTA Gold 24K", metal="GOLD", purity=0.999, weight=1.0, unit="1g",
+                city_code="CHENNAI", city_display_name="Chennai", product_id="MJDTA_GOLD_22K",
+                product_name="MJDTA Gold 22K", metal="GOLD", purity=0.9160, weight=1.0, unit="1g",
                 rate_type="MJDTA_BENCHMARK", price=13222.0, currency="INR",
                 source_product_id="MJDTA_GOLD", raw_source_name="MJDTA GOLD (Without GST)",
             )

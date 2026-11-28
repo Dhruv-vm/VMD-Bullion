@@ -19,11 +19,12 @@ from app.services.sentiment.provenance import parse_utc_iso
 IST = ZoneInfo("Asia/Kolkata")
 
 MJDTA_SPEC = {
-    "product_key": "MJDTA_GOLD_24K",
+    "product_key": "MJDTA_GOLD_22K",
+    "legacy_product_key": "MJDTA_GOLD_24K",
     "city_code": "CHENNAI",
     "source_product_id": "MJDTA_GOLD",
     "tax_basis": "EXCL_GST",
-    "purity": 0.999,
+    "purity": 0.9160,
     "unit": "INR_PER_1G",
     "source_system": "KJPL_MJDTA",
 }
@@ -250,11 +251,11 @@ def load_mjdta_observations_from_db(
         select(BullionRateObservation)
         .join(BullionProduct, BullionProduct.product_id == BullionRateObservation.product_id)
         .where(
-            BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+            BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
             BullionRateObservation.city_code == "CHENNAI",
             BullionRateObservation.source_product_id == "MJDTA_GOLD",
             BullionRateObservation.validation_status == "VALID",
-            BullionProduct.purity == Decimal("0.9990"),
+            BullionProduct.purity.in_([Decimal("0.9160"), Decimal("0.9990")]),
             BullionProduct.unit == "1g",
             BullionProduct.rate_type == "MJDTA_BENCHMARK",
             # A3-11: the observation row itself must also be a 1g MJDTA benchmark quote.
@@ -399,7 +400,7 @@ def load_and_audit_mjdta_series(
             "",
             f"- **Audited at (UTC):** `{summary['audited_at']}`",
             f"- **Target Specification:** `{MJDTA_SPEC['product_key']}` (`city_code=CHENNAI`, `source_product_id=MJDTA_GOLD`, `{MJDTA_SPEC['tax_basis']}`, Purity `{MJDTA_SPEC['purity']}`, Unit `{MJDTA_SPEC['unit']}`)",
-            "- **Authoritative Live/Prospective Source:** PostgreSQL / Neon `bullion_rate_observations` (`MJDTA_GOLD_24K`, `CHENNAI`, `MJDTA_GOLD`, `validation_status='VALID'`).",
+            "- **Authoritative Live/Prospective Source:** PostgreSQL / Neon `bullion_rate_observations` (`MJDTA_GOLD_22K` with legacy `MJDTA_GOLD_24K` continuity, `CHENNAI`, `MJDTA_GOLD`, `validation_status='VALID'`).",
             f"- **Legacy Frozen CSV Preserved (`kjpl_rates.csv`):** {summary['total_raw_rows']} rows ({summary['eligible_publications']} eligible publications; {summary['excluded_observations']} excluded Sunday/carry-over anomalies).",
             f"- **Legacy CSV Date Range:** `{summary['earliest_eligible_observed_at']}` to `{summary['latest_eligible_observed_at']}`",
             f"- **Legacy Price Range (`INR/1g`):** `{summary['min_gold_inr_per_g']}` – `{summary['max_gold_inr_per_g']}`",
@@ -438,7 +439,7 @@ def load_and_audit_mjdta_series(
                 "## Continuity, Isolation & Publication Guarantees",
                 "",
                 "1. Every distinct genuine MJDTA publication (`source_published_at`) is persisted as a `VALID` observation even when the published price is unchanged (`is_changed=False`).",
-                "2. Production MJDTA reads are strictly isolated to `city_code='CHENNAI'`, `product_id='MJDTA_GOLD_24K'`, `source_product_id='MJDTA_GOLD'`, excluding `ALL_INDIA`, retail city quotes, and GST-included benchmarks.",
+                "2. Production MJDTA reads are strictly isolated to `city_code='CHENNAI'`, `product_id IN ('MJDTA_GOLD_22K', 'MJDTA_GOLD_24K')`, `source_product_id='MJDTA_GOLD'`, excluding `ALL_INDIA`, retail city quotes, and GST-included benchmarks.",
                 "3. Observations missing `source_published_at` are quarantined/excluded rather than fabricated from `observed_at`.",
             ]
         )
