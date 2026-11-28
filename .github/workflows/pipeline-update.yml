@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Verify required historical datasets exist
         run: |
@@ -31,8 +31,8 @@ jobs:
           test -s data/news/news_articles.csv || (echo "ERROR: Missing or empty data/news/news_articles.csv" && exit 1)
           echo "[PIPELINE WORKFLOW] Required datasets verified ready (note: Yahoo Finance collector decommissioned)."
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
