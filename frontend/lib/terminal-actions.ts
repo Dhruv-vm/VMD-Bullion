@@ -278,21 +278,21 @@ export function formatSyncNotice(
   lastObsIst?: string | null
 ): string {
   if (systemStatus === "Stale") {
-    return `Terminal synced: Database connected (Quotes from ${lastObsIst || "prior session"}, Stale).`;
+    return `Market quotes are stale (Last observed: ${lastObsIst || "prior session"}). Active session quote pending.`;
   }
   if (systemStatus === "Connected") {
-    return "Terminal synced: Real-time database state verified.";
+    return "Market quotes refreshed (Live feed verified).";
   }
   if (systemStatus === "Unavailable") {
-    return "Terminal synced: Bullion market quotes currently unavailable.";
+    return "Bullion market quotes currently unavailable. Upstream feed offline.";
   }
   if (systemStatus === "Warming up") {
-    return "Terminal synced: Market cache warming up.";
+    return "Market feed warming up...";
   }
   if (systemStatus === "Reconnecting") {
-    return "Terminal synced: Feed reconnecting...";
+    return "Feed reconnecting...";
   }
-  return `Terminal synced: System state ${systemStatus}.`;
+  return `Market feed status: ${systemStatus}.`;
 }
 
 export function formatObservationProvenance(summary: {

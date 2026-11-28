@@ -17,21 +17,21 @@ import {
 
 test("SYNC - generates honest notice for real-time Connected status", () => {
   const notice = formatSyncNotice("Connected");
-  assert.equal(notice, "Terminal synced: Real-time database state verified.");
+  assert.equal(notice, "Market quotes refreshed (Live feed verified).");
 });
 
-test("SYNC - generates honest notice for Stale status with observation timestamp", () => {
+test("SYNC - generates honest notice for Stale status without claiming database connected", () => {
   const notice = formatSyncNotice("Stale", "26 Nov 09:56 AM IST");
   assert.equal(
     notice,
-    "Terminal synced: Database connected (Quotes from 26 Nov 09:56 AM IST, Stale)."
+    "Market quotes are stale (Last observed: 26 Nov 09:56 AM IST). Active session quote pending."
   );
 
   // Fallback when observation time is omitted or null
   const noticeFallback = formatSyncNotice("Stale", null);
   assert.equal(
     noticeFallback,
-    "Terminal synced: Database connected (Quotes from prior session, Stale)."
+    "Market quotes are stale (Last observed: prior session). Active session quote pending."
   );
 });
 
@@ -39,14 +39,14 @@ test("SYNC - generates honest notice for Unavailable feed status", () => {
   const notice = formatSyncNotice("Unavailable");
   assert.equal(
     notice,
-    "Terminal synced: Bullion market quotes currently unavailable."
+    "Bullion market quotes currently unavailable. Upstream feed offline."
   );
 
   const noticeWarm = formatSyncNotice("Warming up");
-  assert.equal(noticeWarm, "Terminal synced: Market cache warming up.");
+  assert.equal(noticeWarm, "Market feed warming up...");
 
   const noticeRecon = formatSyncNotice("Reconnecting");
-  assert.equal(noticeRecon, "Terminal synced: Feed reconnecting...");
+  assert.equal(noticeRecon, "Feed reconnecting...");
 });
 
 // =============================================================================
