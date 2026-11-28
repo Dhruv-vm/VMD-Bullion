@@ -53,19 +53,21 @@ def get_bullion_cities(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 def get_bullion_city_rates(
     city: str | None = Query(None, description="Optional city code filter (e.g. chennai, bengaluru, mumbai)"),
     metal: str | None = Query(None, description="Optional metal filter (GOLD, SILVER, FX)"),
+    include_deprecated: bool = Query(False, description="Whether to include deprecated legacy product rates (e.g. MJDTA_GOLD_24K)"),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    return get_latest_city_rates(city_code=city, metal=metal, db=db)
+    return get_latest_city_rates(city_code=city, metal=metal, include_deprecated=include_deprecated, db=db)
 
 
 @router.get("/city-rates/{city}")
 def get_single_city_rates(
     city: str,
     metal: str | None = Query(None, description="Optional metal filter (GOLD or SILVER)"),
+    include_deprecated: bool = Query(False, description="Whether to include deprecated legacy product rates (e.g. MJDTA_GOLD_24K)"),
     db: Session = Depends(get_db),
 ) -> list[dict[str, Any]]:
     norm_city = normalize_city_code(city)
-    rates = get_latest_city_rates(city_code=norm_city, metal=metal, db=db)
+    rates = get_latest_city_rates(city_code=norm_city, metal=metal, include_deprecated=include_deprecated, db=db)
     if not rates:
         raise HTTPException(status_code=404, detail=f"No bullion rates found for city '{city}'")
     return rates
@@ -79,7 +81,7 @@ def get_bullion_city_comparison(db: Session = Depends(get_db)) -> dict[str, Any]
 @router.get("/history")
 def get_bullion_observations_history(
     city: str | None = Query(None, description="City code (e.g. CHENNAI, BENGALURU)"),
-    product_id: str | None = Query(None, description="Product ID (e.g. GOLD_100G_999, MJDTA_GOLD_24K)"),
+    product_id: str | None = Query(None, description="Product ID (e.g. GOLD_100G_999, MJDTA_GOLD_22K, MJDTA_GOLD_24K)"),
     limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     include_quarantined: bool = Query(False, description="Include quarantined rows for auditing"),

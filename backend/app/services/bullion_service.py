@@ -101,6 +101,14 @@ def _serialize_latest_rate(
         "unit": rate_obj.unit,
         "rate_type": rate_obj.rate_type,
         "latest_price": latest_price,
+        "is_active": prod_obj.is_active,
+        "is_legacy_alias": prod_obj.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST"),
+        "deprecation_notice": (
+            "Legacy product identifier. MJDTA quotes 22CT (916) jewellery gold. "
+            "Use canonical MJDTA_GOLD_22K for observed quote, or DERIVED_MJDTA_GOLD_24K for derived 24K retail parity."
+            if prod_obj.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST")
+            else None
+        ),
         "buy_price": float(rate_obj.buy_price) if rate_obj.buy_price is not None else None,
         "previous_price": float(rate_obj.previous_price) if rate_obj.previous_price is not None else None,
         "change_inr": float(rate_obj.change_inr),
@@ -111,8 +119,8 @@ def _serialize_latest_rate(
         "validation_status": rate_obj.validation_status,
         "source_published_at": rate_obj.source_published_at.isoformat() if rate_obj.source_published_at else None,
         "source_updated_time": _format_pub_time_ist(rate_obj.source_published_at),
-        "observed_at": rate_obj.last_collected_at.isoformat(),
-        "last_verified_at": rate_obj.last_verified_at.isoformat(),
+        "observed_at": rate_obj.last_collected_at.isoformat() if rate_obj.last_collected_at else datetime.now(timezone.utc).isoformat(),
+        "last_verified_at": rate_obj.last_verified_at.isoformat() if rate_obj.last_verified_at else datetime.now(timezone.utc).isoformat(),
         "freshness": freshness["status"],
         "age_hours": freshness["age_hours"],
         "age_seconds": freshness["age_seconds"],
@@ -206,6 +214,7 @@ def _read_latest_rates_from_csv() -> list[dict[str, Any]]:
 def get_latest_city_rates(
     city_code: str | None = None,
     metal: str | None = None,
+    include_deprecated: bool = False,
     db: Session | None = None,
 ) -> list[dict[str, Any]]:
     own = False
@@ -226,6 +235,8 @@ def get_latest_city_rates(
             .where(BullionLatestRate.validation_status.in_(["VALID", "SUSPECT"]))
             .order_by(BullionCity.sort_order, BullionProduct.metal, BullionProduct.product_name)
         )
+        if not include_deprecated:
+            stmt = stmt.where(BullionProduct.is_active.is_(True))
         if city_code:
             stmt = stmt.where(BullionLatestRate.city_code == normalize_city_code(city_code))
         if metal:
@@ -391,13 +402,29 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
     """
     Top-level VMD Bullion summary strictly from KJPL verified rates.
     Uses KJPL Type 1/2 benchmarks only; never substitutes external Yahoo/MCX APIs or outdated hardcoded duty %s.
+    P0.1 Remediation: Canonical MJDTA 22K (0.9160) + mathematically derived 24K retail equivalent.
     """
     if all_rates is None:
         all_rates = get_latest_city_rates(db=db)
 
-    chennai_mjdta = next((r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_24K"), None)
-    chennai_mjdta_gst = next((r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_24K_GST"), None)
+    chennai_mjdta_22k = next(
+        (r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_22K"),
+        None,
+    ) or next(
+        (r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_24K"),
+        None,
+    )
+
+    chennai_mjdta_22k_gst = next(
+        (r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_22K_GST"),
+        None,
+    ) or next(
+        (r for r in all_rates if r["city_code"] == "CHENNAI" and r["product_id"] == "MJDTA_GOLD_24K_GST"),
+        None,
+    )
+
     silver_bench = next((r for r in all_rates if r["product_id"] == "MJDTA_SILVER"), None)
+    silver_bench_gst = next((r for r in all_rates if r["product_id"] == "MJDTA_SILVER_GST"), None)
     wholesale_1kg = next((r for r in all_rates if r["product_id"] == "GOLD_1KG_9999"), None)
 
     spot_gold = next((r for r in all_rates if r["product_id"] == "KJPL_SPOT_GOLD_USD"), None)
@@ -408,6 +435,42 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
     lbma_gold_am = next((r for r in all_rates if r["product_id"] == "LBMA_GOLD_AM_USD"), None)
     lbma_gold_pm = next((r for r in all_rates if r["product_id"] == "LBMA_GOLD_PM_USD"), None)
     lbma_silver = next((r for r in all_rates if r["product_id"] == "LBMA_SILVER_USD"), None)
+
+    # Derived 24K retail equivalent from canonical 22K (IS 1417:2019 fineness 0.9160)
+    derived_gold_24k = None
+    if chennai_mjdta_22k and chennai_mjdta_22k.get("latest_price"):
+        p22k = Decimal(str(chennai_mjdta_22k["latest_price"]))
+        p24k_derived = round(float(p22k / Decimal("0.9160")), 2)
+        chg_inr = chennai_mjdta_22k.get("change_inr")
+        p24k_chg = round(float(Decimal(str(chg_inr)) / Decimal("0.9160")), 2) if chg_inr is not None else 0.0
+        derived_gold_24k = {
+            "product_id": "DERIVED_MJDTA_GOLD_24K",
+            "product_name": "Derived 24K Retail Equivalent (from 22K @ 0.9160)",
+            "city_code": "CHENNAI",
+            "city_display_name": "Chennai",
+            "metal": "GOLD",
+            "purity": 0.9990,
+            "unit": "1g",
+            "latest_price": p24k_derived,
+            "per_gram_price": p24k_derived,
+            "change_inr": p24k_chg,
+            "change_pct": chennai_mjdta_22k.get("change_pct", 0.0),
+            "source_published_at": chennai_mjdta_22k.get("source_published_at"),
+            "source_updated_time": chennai_mjdta_22k.get("source_updated_time"),
+            "freshness": chennai_mjdta_22k.get("freshness", "UNKNOWN"),
+            "is_derived": True,
+            "derivation_formula": "MJDTA_GOLD_22K / Decimal('0.9160')",
+            "derivation_standard": "BIS IS 1417:2019 (916 Fineness)",
+            "warning": "Synthetically derived retail benchmark; not an observed retail quote.",
+        }
+
+    # Backward-compatible legacy alias for benchmark_gold_24k
+    legacy_benchmark_gold_24k = dict(derived_gold_24k) if derived_gold_24k else None
+    if legacy_benchmark_gold_24k:
+        legacy_benchmark_gold_24k["legacy_alias"] = True
+        legacy_benchmark_gold_24k["deprecation_notice"] = (
+            "MJDTA quotes 22CT (916) jewellery gold. Use benchmark_gold_22k for observed quote or derived_gold_24k for 24K retail parity."
+        )
 
     target_cities = ["CHENNAI", "BENGALURU", "MUMBAI", "COIMBATORE", "HYDERABAD"]
     city_tape = []
@@ -446,9 +509,20 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
         usdinr = float(spot_inr["latest_price"])
         xag = float(spot_silver["latest_price"]) if spot_silver else None
         raw_spot_inr_g = round((xau * usdinr) / TROY_OUNCE_GRAMS, 2)
-        ref_gold = chennai_mjdta["per_gram_price"] if chennai_mjdta else None
-        spread_vs_spot_inr = round(ref_gold - raw_spot_inr_g, 2) if (ref_gold and raw_spot_inr_g > 0) else None
-        spread_vs_spot_pct = round((spread_vs_spot_inr / raw_spot_inr_g) * 100, 2) if (spread_vs_spot_inr is not None and raw_spot_inr_g > 0) else None
+        raw_spot_with_gst = round(raw_spot_inr_g * 1.03, 2)
+
+        # Derived 24K Retail vs Spot (Like-for-like pure gold comparison)
+        derived_24k_p = derived_gold_24k["latest_price"] if derived_gold_24k else None
+        retail_vs_spot_inr = round(derived_24k_p - raw_spot_inr_g, 2) if (derived_24k_p and raw_spot_inr_g > 0) else None
+        retail_vs_spot_pct = round((retail_vs_spot_inr / raw_spot_inr_g) * 100, 2) if (retail_vs_spot_inr is not None and raw_spot_inr_g > 0) else None
+
+        # Wholesale 1KG 99.99 Bar vs Spot (Institutional bar comparison)
+        wholesale_p = float(wholesale_1kg["latest_price"]) if (wholesale_1kg and wholesale_1kg.get("latest_price")) else None
+        wholesale_vs_spot_inr = round(wholesale_p - raw_spot_inr_g, 2) if (wholesale_p and raw_spot_inr_g > 0) else None
+        wholesale_vs_spot_pct = round((wholesale_vs_spot_inr / raw_spot_inr_g) * 100, 2) if (wholesale_vs_spot_inr is not None and raw_spot_inr_g > 0) else None
+
+        # Observed 22K Retail Quote
+        obs_22k_p = chennai_mjdta_22k["per_gram_price"] if chennai_mjdta_22k else None
 
         parity_info = {
             "source": "KJPL Live Feed (SPOT-GOLD / SPOT-SILVER / SPOT-INR)",
@@ -456,10 +530,16 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
             "xagusd": xag,
             "usdinr": usdinr,
             "raw_spot_inr_per_gram": raw_spot_inr_g,
-            "domestic_vs_spot_spread_inr": spread_vs_spot_inr,
-            "domestic_vs_spot_spread_pct": spread_vs_spot_pct,
+            "raw_spot_with_gst_per_gram": raw_spot_with_gst,
+            "domestic_vs_spot_spread_inr": retail_vs_spot_inr,
+            "domestic_vs_spot_spread_pct": retail_vs_spot_pct,
+            "derived_retail_parity_spread_inr": retail_vs_spot_inr,
+            "derived_retail_parity_spread_pct": retail_vs_spot_pct,
+            "wholesale_vs_spot_spread_inr": wholesale_vs_spot_inr,
+            "wholesale_vs_spot_spread_pct": wholesale_vs_spot_pct,
+            "observed_mjdta_22k_rate": obs_22k_p,
             "market_freshness": spot_gold["freshness"],
-            "note": "Raw spot conversion excludes unverified customs/GST policy assumptions.",
+            "note": "Derived retail parity and wholesale spreads compare equivalent 24K fineness against international spot conversion.",
         }
 
     return {
@@ -467,9 +547,13 @@ def get_bullion_summary(all_rates: list[dict[str, Any]] | None = None, db: Sessi
         "default_city": "CHENNAI",
         "data_source": "KJPL Exclusive",
         "trading_status": get_market_trading_status(),
-        "benchmark_gold_24k": chennai_mjdta,
-        "benchmark_gold_24k_gst": chennai_mjdta_gst,
+        "benchmark_gold_22k": chennai_mjdta_22k,
+        "benchmark_gold_22k_gst": chennai_mjdta_22k_gst,
+        "derived_gold_24k": derived_gold_24k,
+        "benchmark_gold_24k": legacy_benchmark_gold_24k,
+        "benchmark_gold_24k_gst": chennai_mjdta_22k_gst,
         "benchmark_silver": silver_bench,
+        "benchmark_silver_gst": silver_bench_gst,
         "wholesale_gold_1kg": wholesale_1kg,
         "kjpl_live_terminal": {
             "spot_gold_usd": spot_gold,
@@ -509,16 +593,43 @@ def get_bullion_history(
         if city_code:
             stmt = stmt.where(BullionRateObservation.city_code == normalize_city_code(city_code))
         if product_id:
-            stmt = stmt.where(BullionRateObservation.product_id == product_id)
+            if product_id in ("MJDTA_GOLD_22K", "MJDTA_GOLD_24K"):
+                stmt = stmt.where(BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]))
+            elif product_id in ("MJDTA_GOLD_22K_GST", "MJDTA_GOLD_24K_GST"):
+                stmt = stmt.where(BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K_GST", "MJDTA_GOLD_24K_GST"]))
+            else:
+                stmt = stmt.where(BullionRateObservation.product_id == product_id)
 
         stmt = stmt.offset(offset).limit(min(limit, 1000))
         results = db.execute(stmt).scalars().all()
         if results:
-            return [
-                {
+            out = []
+            for obs in results:
+                is_legacy = obs.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST")
+                canonical_pid = (
+                    "MJDTA_GOLD_22K" if obs.product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_22K")
+                    else "MJDTA_GOLD_22K_GST" if obs.product_id in ("MJDTA_GOLD_24K_GST", "MJDTA_GOLD_22K_GST")
+                    else obs.product_id
+                )
+                purity_val = (
+                    0.9160 if canonical_pid in ("MJDTA_GOLD_22K", "MJDTA_GOLD_22K_GST")
+                    else 0.9999 if obs.product_id == "GOLD_1KG_9999"
+                    else 0.9990
+                )
+                prov_note = (
+                    "Historical observation captured under legacy identifier MJDTA_GOLD_24K prior to P0.1 remediation."
+                    if is_legacy else None
+                )
+
+                out.append({
                     "id": obs.id,
                     "city_code": obs.city_code,
-                    "product_id": obs.product_id,
+                    "product_id": canonical_pid,
+                    "stored_product_id": obs.product_id,
+                    "canonical_product_id": canonical_pid,
+                    "is_legacy_alias": is_legacy,
+                    "purity": purity_val,
+                    "provenance_note": prov_note,
                     "price": float(obs.price),
                     "normalized_price_per_gram": float(obs.normalized_price_per_gram) if obs.normalized_price_per_gram is not None else None,
                     "currency": obs.currency,
@@ -530,9 +641,8 @@ def get_bullion_history(
                     "observed_at": obs.observed_at.isoformat(),
                     "is_changed": obs.is_changed,
                     "freshness_status": obs.freshness_status,
-                }
-                for obs in results
-            ]
+                })
+            return out
     except Exception:
         if ENVIRONMENT == "production":
             raise

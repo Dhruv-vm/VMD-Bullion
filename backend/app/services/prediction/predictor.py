@@ -96,7 +96,7 @@ def get_prediction_status(db=None) -> dict:
                 "observation_time": overview.get("timestamp"),
             },
             "pipeline_specification": {
-                "target_instrument": "KJPL MJDTA_GOLD_24K (EXCL_GST, 0.999 purity, INR / gram)",
+                "target_instrument": "KJPL MJDTA_GOLD_22K (EXCL_GST, 0.9160 purity, INR / gram)",
                 "forecast_horizon": "1 & 3 Valid Distinct MJDTA Publications Ahead",
                 "validation_methodology": "Paired A/B/C/NO_CHANGE shadow walk-forward (`EXPERIMENT_PROTOCOL_V1`)",
                 "system_isolation": "Strictly isolated from 5-city live terminal rates and external LBMA/yfinance feeds",

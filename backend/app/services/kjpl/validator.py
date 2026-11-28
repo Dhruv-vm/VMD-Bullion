@@ -18,19 +18,19 @@ class ValidationOutcome:
 
 # Product-specific validation specifications (INR/g unless currency == USD)
 PRODUCT_SPECS: dict[str, dict] = {
-    "MJDTA_GOLD_24K": {
+    "MJDTA_GOLD_22K": {
         "metal": "GOLD",
         "currency": "INR",
         "min_per_gram": 5000.0,
         "max_per_gram": 50000.0,
-        "expected_purity": 0.999,
+        "expected_purity": 0.9160,
     },
-    "MJDTA_GOLD_24K_GST": {
+    "MJDTA_GOLD_22K_GST": {
         "metal": "GOLD",
         "currency": "INR",
         "min_per_gram": 5000.0,
         "max_per_gram": 52000.0,
-        "expected_purity": 0.999,
+        "expected_purity": 0.9160,
     },
     "MJDTA_SILVER": {
         "metal": "SILVER",
@@ -147,6 +147,7 @@ def validate_bullion_observation(
     price: float | Decimal | None,
     source_product_id: str | None = None,
     previous_valid_per_gram: float | None = None,
+    purity: float | Decimal | None = None,
 ) -> ValidationOutcome:
     """
     Strictly validate a bullion observation against product-specific bounds,
@@ -154,6 +155,15 @@ def validate_bullion_observation(
     Never substitutes values or silently accepts USD/oz or weight/com_id artifacts.
     """
     weight_grams = resolve_weight_grams(unit, float(weight_value or 1.0))
+
+    # Reject deprecated legacy MJDTA 24K classifications
+    if product_id in ("MJDTA_GOLD_24K", "MJDTA_GOLD_24K_GST"):
+        return ValidationOutcome(
+            "QUARANTINED",
+            f"Deprecated 24K classification '{product_id}' rejected. MJDTA quotes 22CT jewellery gold; use MJDTA_GOLD_22K with 0.9160 fineness.",
+            weight_grams,
+            None,
+        )
 
     if price is None:
         return ValidationOutcome("QUARANTINED", "Price is missing/null.", weight_grams, None)
@@ -176,6 +186,17 @@ def validate_bullion_observation(
         return ValidationOutcome("QUARANTINED", f"Metal mismatch: expected {spec['metal']}, got {metal}.", weight_grams, None)
     if spec["currency"] != currency.upper():
         return ValidationOutcome("QUARANTINED", f"Currency mismatch: expected {spec['currency']}, got {currency}.", weight_grams, None)
+
+    # Purity check if provided
+    if purity is not None and "expected_purity" in spec:
+        p_val = float(purity)
+        if abs(p_val - spec["expected_purity"]) > 0.005:
+            return ValidationOutcome(
+                "QUARANTINED",
+                f"Purity mismatch for {product_id}: expected {spec['expected_purity']}, got {p_val}.",
+                weight_grams,
+                None,
+            )
 
     # International USD/oz or FX quotes
     if "min_orig" in spec:

@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 import hashlib
 import math
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 from scipy.stats import t as scipy_t
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
 import app.db.session as db_session
-from app.models.bullion import BullionRateObservation
+from app.models.bullion import BullionRateObservation, DataSourceStatus
 from app.models.research import (
     ForecastEvaluation,
     ForecastEvaluationReassessment,
@@ -43,9 +44,10 @@ PROTOCOL_VERSION = "EXPERIMENT_PROTOCOL_V1"
 MODEL_VERSION = "RIDGE_STD_V1"
 ARMS = ("NO_CHANGE", "PRICE_ONLY", "NEWS_ONLY", "HYBRID")
 HORIZONS = (1, 3)
-MIN_TRAINING_ORIGINS = 10
-MIN_EVALUATION_SAMPLES = 30
+MIN_TRAINING_ORIGINS = 50
+MIN_EVALUATION_SAMPLES = 50
 MIN_DM_SAMPLES = 20
+TARGET_DAILY_OBSERVATIONS = 50
 FLAT_RETURN_THRESHOLD = 0.0005  # ~5 bps
 RIDGE_ALPHA = 5.0
 
@@ -835,7 +837,7 @@ def persist_prospective_forecast_run(
     post_obs_rows = db.execute(
         select(BullionRateObservation.id, BullionRateObservation.observed_at, BullionRateObservation.source_published_at)
         .where(
-            BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+            BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
             BullionRateObservation.city_code == "CHENNAI",
             BullionRateObservation.source_product_id == "MJDTA_GOLD",
             BullionRateObservation.validation_status == "VALID",
@@ -1021,7 +1023,7 @@ def evaluate_matured_prospective_forecasts(db: Session) -> dict[str, int]:
             orig_tgt_row = db.execute(
                 select(BullionRateObservation)
                 .where(
-                    BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+                    BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
                     BullionRateObservation.city_code == "CHENNAI",
                     BullionRateObservation.source_product_id == "MJDTA_GOLD",
                     BullionRateObservation.validation_status == "VALID",
@@ -1118,7 +1120,7 @@ def evaluate_matured_prospective_forecasts(db: Session) -> dict[str, int]:
         corrections = db.execute(
             select(BullionRateObservation)
             .where(
-                BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+                BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
                 BullionRateObservation.city_code == "CHENNAI",
                 BullionRateObservation.source_product_id == "MJDTA_GOLD",
                 BullionRateObservation.validation_status == "VALID",
@@ -1572,6 +1574,150 @@ def get_latest_mjdta_research_summary(
             "metrics_by_horizon": backtest_study["metrics_by_horizon"],
             "backtest_status": backtest_study["status"],
             "mjdta_audit": mjdta_audit,
+            "dataset_readiness": get_ml_dataset_readiness_status(db=db),
+        }
+    finally:
+        if own_session:
+            db.close()
+
+
+def get_ml_dataset_readiness_status(
+    db: Session | None = None,
+    include_csv: bool = True,
+    csv_path: Path | None = None,
+) -> dict[str, Any]:
+    """
+    Evaluates MJDTA market data readiness against the target of 50 valid daily observations.
+    Reconciles trusted historical CSV observations with production PostgreSQL observations.
+    Counting rule: Deduplicated unique valid market dates in Asia/Kolkata timezone.
+    """
+    own_session = False
+    if db is None:
+        db = db_session.SessionLocal()
+        own_session = True
+
+    IST = ZoneInfo("Asia/Kolkata")
+    try:
+        # 1. Fetch valid MJDTA observations from database
+        valid_rows = db.execute(
+            select(BullionRateObservation)
+            .where(
+                BullionRateObservation.city_code == "CHENNAI",
+                BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
+                BullionRateObservation.source_product_id == "MJDTA_GOLD",
+                BullionRateObservation.validation_status == "VALID",
+                BullionRateObservation.source_published_at.is_not(None),
+            )
+            .order_by(BullionRateObservation.source_published_at.asc())
+        ).scalars().all()
+
+        db_dates: dict[Any, Any] = {}
+        for r in valid_rows:
+            if r.source_published_at:
+                d = r.source_published_at.astimezone(IST).date()
+                if d not in db_dates or r.source_published_at > db_dates[d].source_published_at:
+                    db_dates[d] = r
+
+        # 2. Reconcile with trusted historical CSV if requested/available
+        csv_rows_discovered = 0
+        valid_csv_observations = 0
+        distinct_csv_market_dates = 0
+        csv_dates: dict[Any, Any] = {}
+
+        if include_csv:
+            if csv_path is None:
+                repo_root = Path(__file__).resolve().parents[4]
+                default_csv = repo_root / "data/kjpl/kjpl_rates.csv"
+                if default_csv.exists():
+                    csv_path = default_csv
+
+            if csv_path is not None and csv_path.exists():
+                try:
+                    from app.services.prediction.mjdta_series import load_and_audit_mjdta_series
+                    csv_obs, csv_summary = load_and_audit_mjdta_series(csv_path)
+                    csv_rows_discovered = csv_summary.get("total_raw_rows", 0)
+                    csv_eligible = [o for o in csv_obs if o.is_eligible_publication]
+                    valid_csv_observations = len(csv_eligible)
+                    for o in csv_eligible:
+                        d = o.observed_at_utc.astimezone(IST).date()
+                        if d not in csv_dates or o.observed_at_utc > csv_dates[d].observed_at_utc:
+                            csv_dates[d] = o
+                    distinct_csv_market_dates = len(csv_dates)
+                except Exception as csv_err:
+                    print(f"[DATASET READINESS] CSV audit note: {csv_err}")
+
+        # 3. Deduplicate across sources
+        overlapping_dates = sorted(set(csv_dates.keys()).intersection(set(db_dates.keys())))
+        combined_dates = sorted(set(csv_dates.keys()).union(set(db_dates.keys())))
+        deduplicated_daily_observations = len(combined_dates)
+
+        target = TARGET_DAILY_OBSERVATIONS  # 50
+        target_completed_pct = round((deduplicated_daily_observations / float(target)) * 100.0, 1)
+        remaining_dates_needed = max(0, target - deduplicated_daily_observations)
+
+        first_valid_market_date = combined_dates[0].isoformat() if combined_dates else None
+        latest_valid_market_date = combined_dates[-1].isoformat() if combined_dates else None
+
+        # Calculate missing business dates in span (Monday - Saturday)
+        missing_dates = []
+        if len(combined_dates) >= 2:
+            cur = combined_dates[0]
+            end = combined_dates[-1]
+            date_set = set(combined_dates)
+            while cur < end:
+                cur += timedelta(days=1)
+                # Skip Sundays (weekday 6)
+                if cur.weekday() != 6 and cur not in date_set and cur < end:
+                    missing_dates.append(cur.isoformat())
+
+        # 4. Count quarantined/invalid records
+        quarantined_count = db.execute(
+            select(func.count(BullionRateObservation.id))
+            .where(
+                BullionRateObservation.product_id.like("MJDTA%"),
+                BullionRateObservation.validation_status.in_(["QUARANTINED", "INVALIDATED"]),
+            )
+        ).scalar() or 0
+
+        # 5. Source status
+        ds = db.execute(
+            select(DataSourceStatus).where(DataSourceStatus.source_name == "KJPL_MJDTA")
+        ).scalar_one_or_none() or db.execute(
+            select(DataSourceStatus).where(DataSourceStatus.source_name == "KJPL")
+        ).scalar_one_or_none()
+
+        last_successful_run = ds.last_successful_run.isoformat() if (ds and ds.last_successful_run) else None
+        last_source_published_at = (
+            valid_rows[-1].source_published_at.isoformat() if valid_rows and valid_rows[-1].source_published_at else None
+        )
+
+        if quarantined_count > 0 and deduplicated_daily_observations == 0:
+            readiness_status = "DATA_QUALITY_BLOCKED"
+        elif deduplicated_daily_observations >= target:
+            readiness_status = "READY_FOR_EXPERIMENTAL_TRAINING"
+        elif deduplicated_daily_observations > 0:
+            readiness_status = "COLLECTING"
+        else:
+            readiness_status = "INSUFFICIENT_HISTORY"
+
+        return {
+            "csv_rows_discovered": csv_rows_discovered,
+            "valid_csv_observations": valid_csv_observations,
+            "distinct_csv_market_dates": distinct_csv_market_dates,
+            "neon_observations": len(valid_rows),
+            "overlapping_dates": len(overlapping_dates),
+            "deduplicated_daily_observations": deduplicated_daily_observations,
+            "valid_daily_snapshots_collected": deduplicated_daily_observations,  # backward compatibility alias
+            "target": target,
+            "target_completed_pct": target_completed_pct,
+            "remaining_dates_needed": remaining_dates_needed,
+            "first_valid_market_date": first_valid_market_date,
+            "latest_valid_market_date": latest_valid_market_date,
+            "missing_dates": missing_dates,
+            "invalid_or_quarantined_observations": quarantined_count,
+            "last_successful_collector_run": last_successful_run,
+            "last_source_published_at": last_source_published_at,
+            "readiness_status": readiness_status,
         }
     finally:
         if own_session:

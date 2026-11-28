@@ -67,7 +67,8 @@ def test_reconciled_purity_valuation_and_millesimal_input():
     gold_rate, _ = get_current_benchmark_rates()
 
     # Case A: 10g bar of standard 999 gold (purity passed as 0.999)
-    # Valuation must equal exactly gross_weight * gold_rate
+    # Evaluated at Derived 24K Retail Equivalent (gold_rate / 0.9160)
+    derived_rate = round(gold_rate / 0.9160, 2)
     h_999 = PortfolioService.create_holding({
         "metal_type": "GOLD",
         "product_name": "Standard 999 Bar",
@@ -75,10 +76,10 @@ def test_reconciled_purity_valuation_and_millesimal_input():
         "gross_weight": 10.0,
         "quantity": 1,
     }, user_id=user)
-    assert h_999["current_valuation_inr"] == pytest.approx(10.0 * gold_rate, rel=1e-4)
+    assert h_999["current_valuation_inr"] == pytest.approx(10.0 * derived_rate, rel=1e-4)
 
     # Case B: Millesimal purity input (passed as 916.0 instead of 0.916)
-    # Should auto-normalize to 0.916 without failing validation
+    # Should auto-normalize to 0.916 and evaluate at direct MJDTA 22K benchmark
     h_22k = PortfolioService.create_holding({
         "metal_type": "GOLD",
         "product_name": "22K Bangle",
@@ -87,11 +88,11 @@ def test_reconciled_purity_valuation_and_millesimal_input():
         "quantity": 1,
     }, user_id=user)
     assert h_22k["purity"] == 0.916
-    expected_22k_val = round(10.0 * (0.916 / 0.999) * gold_rate, 2)
+    expected_22k_val = round(10.0 * (0.916 / 0.9160) * gold_rate, 2)
     assert h_22k["current_valuation_inr"] == pytest.approx(expected_22k_val, rel=1e-4)
 
     # Case C: 999.9 Minted Bar (passed as 0.9999)
-    # Should evaluate with 0.9999 / 0.999 premium over standard 999
+    # Should evaluate with 0.9999 / 0.9990 premium over standard 999
     h_9999 = PortfolioService.create_holding({
         "metal_type": "GOLD",
         "product_name": "999.9 Minted Bar",
@@ -99,7 +100,7 @@ def test_reconciled_purity_valuation_and_millesimal_input():
         "gross_weight": 10.0,
         "quantity": 1,
     }, user_id=user)
-    expected_9999_val = round(10.0 * (0.9999 / 0.999) * gold_rate, 2)
+    expected_9999_val = round(10.0 * (0.9999 / 0.9990) * derived_rate, 2)
     assert h_9999["current_valuation_inr"] == pytest.approx(expected_9999_val, rel=1e-4)
     assert h_9999["current_valuation_inr"] > h_999["current_valuation_inr"]
 

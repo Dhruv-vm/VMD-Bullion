@@ -184,7 +184,7 @@ class ResearchFeatureSnapshot(Base):
     generation_mode: Mapped[str] = mapped_column(String(24), index=True, nullable=False, default="BACKTEST")
     cutoff_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     label_cutoff_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    target_product: Mapped[str] = mapped_column(String(48), nullable=False, default="MJDTA_GOLD_24K")
+    target_product: Mapped[str] = mapped_column(String(48), nullable=False, default="MJDTA_GOLD_22K")
     origin_observation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     origin_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     origin_source_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True, nullable=True)

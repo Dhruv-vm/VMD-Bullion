@@ -92,7 +92,7 @@ def get_kjpl_history(limit: int = 100):
             select(BullionRateObservation)
             .where(
                 BullionRateObservation.city_code == "CHENNAI",
-                BullionRateObservation.product_id == "MJDTA_GOLD_24K",
+                BullionRateObservation.product_id.in_(["MJDTA_GOLD_22K", "MJDTA_GOLD_24K"]),
                 BullionRateObservation.validation_status.in_(["VALID", "SUSPECT"]),
             )
             .order_by(desc(BullionRateObservation.observed_at))

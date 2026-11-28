@@ -151,11 +151,11 @@ export function MjdtaPredictionPanel() {
             SYSTEM B — MJDTA RESEARCH TERMINAL ({payload.protocol_version} / {payload.model_version || "RIDGE_STD_V1"})
           </span>
           <h2 className="text-base sm:text-lg font-bold text-white mt-0.5">
-            MJDTA 24K Research: Prospective Ledger vs Historical Backtest
+            MJDTA 22K Research: Prospective Ledger vs Historical Backtest
           </h2>
           <p className="text-xs text-[#8B98A5] mt-1">
-            Target: <span className="text-white font-mono">{payload.target_spec?.product_key || "MJDTA_GOLD_24K"}</span>{" "}
-            ({payload.target_spec?.tax_basis || "EXCL_GST"}, purity {payload.target_spec?.purity ?? 0.999}, INR/1g) via{" "}
+            Target: <span className="text-white font-mono">{payload.target_spec?.product_key || "MJDTA_GOLD_22K"}</span>{" "}
+            ({payload.target_spec?.tax_basis || "EXCL_GST"}, purity {payload.target_spec?.purity ?? 0.916}, INR/1g) via{" "}
             <span className="font-mono text-white">{payload.mjdta_audit?.source_backend || "database"}</span>. Strictly isolated
             from 5-city live retail rates and external spot feeds.
           </p>

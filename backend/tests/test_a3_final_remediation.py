@@ -72,10 +72,10 @@ def _mjdta_item(price: float):
     return _build_validated_item(
         city_code="CHENNAI",
         city_display_name="Chennai",
-        product_id="MJDTA_GOLD_24K",
-        product_name="MJDTA Gold 24K Benchmark (Excl. GST)",
+        product_id="MJDTA_GOLD_22K",
+        product_name="MJDTA Gold 22K Benchmark (Excl. GST)",
         metal="GOLD",
-        purity=0.999,
+        purity=0.9160,
         weight=1.0,
         unit="1g",
         rate_type="MJDTA_BENCHMARK",
@@ -95,7 +95,7 @@ def _seed_mjdta_history(db, start_dt: datetime, n: int = 18, step: float = 25.0)
         db.add(
             BullionRateObservation(
                 city_code="CHENNAI",
-                product_id="MJDTA_GOLD_24K",
+                product_id="MJDTA_GOLD_22K",
                 source_product_id="MJDTA_GOLD",
                 price=Decimal(str(13000.0 + k * step)),
                 currency="INR",

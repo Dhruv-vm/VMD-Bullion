@@ -11,7 +11,7 @@ class ParsedCityRate(BaseModel):
     source_name: str = Field(default="KJPL")
     city_code: str = Field(description="CHENNAI, BENGALURU, MUMBAI, COIMBATORE, HYDERABAD, ALL_INDIA")
     city_display_name: str = Field(description="Normalized display name e.g. Bengaluru")
-    product_id: str = Field(description="Unique internal ID e.g. GOLD_100G_999, GOLD_1KG_9999, MJDTA_GOLD_24K")
+    product_id: str = Field(description="Unique internal ID e.g. GOLD_100G_999, GOLD_1KG_9999, MJDTA_GOLD_22K")
     product_name: str = Field(description="Descriptive standardized product title")
     metal: str = Field(description="'GOLD', 'SILVER', or 'FX'")
     purity: float = Field(description="Decimal purity e.g. 0.999, 0.9999")
