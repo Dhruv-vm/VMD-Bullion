@@ -1581,10 +1581,15 @@ def get_latest_mjdta_research_summary(
             db.close()
 
 
-def get_ml_dataset_readiness_status(db: Session | None = None) -> dict[str, Any]:
+def get_ml_dataset_readiness_status(
+    db: Session | None = None,
+    include_csv: bool = True,
+    csv_path: Path | None = None,
+) -> dict[str, Any]:
     """
     Evaluates MJDTA market data readiness against the target of 50 valid daily observations.
-    Section 9.5: Reports progress and data quality gates.
+    Reconciles trusted historical CSV observations with production PostgreSQL observations.
+    Counting rule: Deduplicated unique valid market dates in Asia/Kolkata timezone.
     """
     own_session = False
     if db is None:
@@ -1593,7 +1598,7 @@ def get_ml_dataset_readiness_status(db: Session | None = None) -> dict[str, Any]
 
     IST = ZoneInfo("Asia/Kolkata")
     try:
-        # 1. Fetch valid MJDTA observations
+        # 1. Fetch valid MJDTA observations from database
         valid_rows = db.execute(
             select(BullionRateObservation)
             .where(
@@ -1606,31 +1611,66 @@ def get_ml_dataset_readiness_status(db: Session | None = None) -> dict[str, Any]
             .order_by(BullionRateObservation.source_published_at.asc())
         ).scalars().all()
 
-        distinct_dates = sorted({
-            r.source_published_at.astimezone(IST).date()
-            for r in valid_rows
-            if r.source_published_at
-        })
-        valid_daily_snapshots_collected = len(distinct_dates)
-        target = TARGET_DAILY_OBSERVATIONS  # 50
-        target_completed_pct = round((valid_daily_snapshots_collected / float(target)) * 100.0, 1)
+        db_dates: dict[Any, Any] = {}
+        for r in valid_rows:
+            if r.source_published_at:
+                d = r.source_published_at.astimezone(IST).date()
+                if d not in db_dates or r.source_published_at > db_dates[d].source_published_at:
+                    db_dates[d] = r
 
-        first_valid_market_date = distinct_dates[0].isoformat() if distinct_dates else None
-        latest_valid_market_date = distinct_dates[-1].isoformat() if distinct_dates else None
+        # 2. Reconcile with trusted historical CSV if requested/available
+        csv_rows_discovered = 0
+        valid_csv_observations = 0
+        distinct_csv_market_dates = 0
+        csv_dates: dict[Any, Any] = {}
+
+        if include_csv:
+            if csv_path is None:
+                repo_root = Path(__file__).resolve().parents[4]
+                default_csv = repo_root / "data/kjpl/kjpl_rates.csv"
+                if default_csv.exists():
+                    csv_path = default_csv
+
+            if csv_path is not None and csv_path.exists():
+                try:
+                    from app.services.prediction.mjdta_series import load_and_audit_mjdta_series
+                    csv_obs, csv_summary = load_and_audit_mjdta_series(csv_path)
+                    csv_rows_discovered = csv_summary.get("total_raw_rows", 0)
+                    csv_eligible = [o for o in csv_obs if o.is_eligible_publication]
+                    valid_csv_observations = len(csv_eligible)
+                    for o in csv_eligible:
+                        d = o.observed_at_utc.astimezone(IST).date()
+                        if d not in csv_dates or o.observed_at_utc > csv_dates[d].observed_at_utc:
+                            csv_dates[d] = o
+                    distinct_csv_market_dates = len(csv_dates)
+                except Exception as csv_err:
+                    print(f"[DATASET READINESS] CSV audit note: {csv_err}")
+
+        # 3. Deduplicate across sources
+        overlapping_dates = sorted(set(csv_dates.keys()).intersection(set(db_dates.keys())))
+        combined_dates = sorted(set(csv_dates.keys()).union(set(db_dates.keys())))
+        deduplicated_daily_observations = len(combined_dates)
+
+        target = TARGET_DAILY_OBSERVATIONS  # 50
+        target_completed_pct = round((deduplicated_daily_observations / float(target)) * 100.0, 1)
+        remaining_dates_needed = max(0, target - deduplicated_daily_observations)
+
+        first_valid_market_date = combined_dates[0].isoformat() if combined_dates else None
+        latest_valid_market_date = combined_dates[-1].isoformat() if combined_dates else None
 
         # Calculate missing business dates in span (Monday - Saturday)
         missing_dates = []
-        if len(distinct_dates) >= 2:
-            cur = distinct_dates[0]
-            end = distinct_dates[-1]
-            date_set = set(distinct_dates)
+        if len(combined_dates) >= 2:
+            cur = combined_dates[0]
+            end = combined_dates[-1]
+            date_set = set(combined_dates)
             while cur < end:
                 cur += timedelta(days=1)
                 # Skip Sundays (weekday 6)
                 if cur.weekday() != 6 and cur not in date_set and cur < end:
                     missing_dates.append(cur.isoformat())
 
-        # 2. Count quarantined/invalid records
+        # 4. Count quarantined/invalid records
         quarantined_count = db.execute(
             select(func.count(BullionRateObservation.id))
             .where(
@@ -1639,7 +1679,7 @@ def get_ml_dataset_readiness_status(db: Session | None = None) -> dict[str, Any]
             )
         ).scalar() or 0
 
-        # 3. Source status
+        # 5. Source status
         ds = db.execute(
             select(DataSourceStatus).where(DataSourceStatus.source_name == "KJPL_MJDTA")
         ).scalar_one_or_none() or db.execute(
@@ -1651,19 +1691,26 @@ def get_ml_dataset_readiness_status(db: Session | None = None) -> dict[str, Any]
             valid_rows[-1].source_published_at.isoformat() if valid_rows and valid_rows[-1].source_published_at else None
         )
 
-        if quarantined_count > 0 and valid_daily_snapshots_collected == 0:
+        if quarantined_count > 0 and deduplicated_daily_observations == 0:
             readiness_status = "DATA_QUALITY_BLOCKED"
-        elif valid_daily_snapshots_collected >= target:
-            readiness_status = "READY_FOR_INITIAL_TRAINING"
-        elif valid_daily_snapshots_collected > 0:
+        elif deduplicated_daily_observations >= target:
+            readiness_status = "READY_FOR_EXPERIMENTAL_TRAINING"
+        elif deduplicated_daily_observations > 0:
             readiness_status = "COLLECTING"
         else:
             readiness_status = "INSUFFICIENT_HISTORY"
 
         return {
-            "valid_daily_snapshots_collected": valid_daily_snapshots_collected,
+            "csv_rows_discovered": csv_rows_discovered,
+            "valid_csv_observations": valid_csv_observations,
+            "distinct_csv_market_dates": distinct_csv_market_dates,
+            "neon_observations": len(valid_rows),
+            "overlapping_dates": len(overlapping_dates),
+            "deduplicated_daily_observations": deduplicated_daily_observations,
+            "valid_daily_snapshots_collected": deduplicated_daily_observations,  # backward compatibility alias
             "target": target,
             "target_completed_pct": target_completed_pct,
+            "remaining_dates_needed": remaining_dates_needed,
             "first_valid_market_date": first_valid_market_date,
             "latest_valid_market_date": latest_valid_market_date,
             "missing_dates": missing_dates,
