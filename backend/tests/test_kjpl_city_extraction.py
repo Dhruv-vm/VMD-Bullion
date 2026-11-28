@@ -214,13 +214,13 @@ def test_five_city_ids_47_to_52_independent_normalization_and_ws(isolated_sessio
     assert latest_47.source_product_id == "47"
     assert latest_47.validation_status == "VALID"
 
-    # 2. Strict 5-city non-persistence: IDs 48..52 do NOT persist to database
+    # 2. P0.3 Persistence: IDs 48..52 persist directly to database
     assert isolated_session.query(BullionLatestRate).filter(
         BullionLatestRate.city_code.in_(["CHENNAI", "BENGALURU", "MUMBAI", "COIMBATORE", "HYDERABAD"])
-    ).count() == 0
+    ).count() == 5
     assert isolated_session.query(BullionRateObservation).filter(
         BullionRateObservation.city_code.in_(["CHENNAI", "BENGALURU", "MUMBAI", "COIMBATORE", "HYDERABAD"])
-    ).count() == 0
+    ).count() == 5
 
     # 3. IDs 48..52 are served via short-lived in-memory cache
     from app.services.kjpl.live_rate_service import live_city_cache
@@ -255,9 +255,8 @@ def test_sub_1000_city_gold_rejected_across_all_five_ids(isolated_session):
     res = persist_parsed_payload(payload, session=isolated_session, source_key="KJPL_LIVE", mirror_csv=False)
     assert res["records_quarantined"] == 6
     assert isolated_session.query(BullionLatestRate).count() == 0
-    # ID 47 is persistent, so it is recorded to BullionRateObservation as QUARANTINED
-    # IDs 48..52 are non-persistent, so they do NOT insert into BullionRateObservation
-    assert isolated_session.query(BullionRateObservation).filter_by(validation_status="QUARANTINED").count() == 1
+    # All quarantined records (47 and 48..52) are preserved in BullionRateObservation for forensic auditing
+    assert isolated_session.query(BullionRateObservation).filter_by(validation_status="QUARANTINED").count() == 6
     obs_47 = isolated_session.query(BullionRateObservation).filter_by(source_product_id="47").one()
     assert obs_47.validation_status == "QUARANTINED"
 
@@ -316,11 +315,11 @@ def test_legacy_db_metadata_repair_and_collector_execution(isolated_session, tmp
     row_47 = isolated_session.query(BullionLatestRate).filter_by(city_code="ALL_INDIA", product_id="GOLD_1KG_9999").one()
     assert float(row_47.normalized_price_per_gram) > 14000.0
 
-    # The 5 city feeds (IDs 48-52) for GOLD_100G_999 are NOT persisted in BullionLatestRate
+    # The 5 city feeds (IDs 48-52) for GOLD_100G_999 ARE persisted in BullionLatestRate
     assert isolated_session.query(BullionLatestRate).filter(
         BullionLatestRate.city_code.in_(["CHENNAI", "BENGALURU", "MUMBAI", "COIMBATORE", "HYDERABAD"]),
         BullionLatestRate.product_id == "GOLD_100G_999",
-    ).count() == 0
+    ).count() == 5
 
     # The 5 city feeds ARE served via live_city_cache
     from app.services.kjpl.live_rate_service import live_city_cache
@@ -403,8 +402,8 @@ def test_stage18_universal_future_and_invalid_timestamp_quarantine(isolated_sess
     bad_obs = isolated_session.query(BullionRateObservation).filter_by(source_product_id="47").order_by(BullionRateObservation.id.desc()).first()
     assert bad_obs.validation_status == "QUARANTINED"
     assert bad_obs.source_published_at is None
-    # ID 48 is non-persistent, so it has 0 observations
-    assert isolated_session.query(BullionRateObservation).filter_by(source_product_id="48").count() == 0
+    # ID 48 quarantined observations are preserved for auditing
+    assert isolated_session.query(BullionRateObservation).filter_by(source_product_id="48", validation_status="QUARANTINED").count() == 2
 
     # 3. Valid MJDTA unchanged-price distinct publications & ALL_INDIA isolation
     from app.services.kjpl.city_parser import parse_kjpl_all_city_rates

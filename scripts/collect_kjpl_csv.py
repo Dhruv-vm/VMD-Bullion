@@ -511,11 +511,21 @@ if __name__ == "__main__":
     parser.add_argument("--with-snapshot", action="store_true", help="Run Pipeline A plus separate snapshot run")
     args = parser.parse_args()
 
+    ret = 0
     if args.snapshot_only:
-        run_kjpl_snapshot_collection()
+        res = run_kjpl_snapshot_collection()
+        if res.get("status") != "SUCCESS":
+            ret = 1
     elif args.with_snapshot:
-        run_collection(include_live_snapshot=True)
+        res = run_collection(include_live_snapshot=True)
+        if res.get("status") != "SUCCESS":
+            ret = 1
     elif args.mjdta_only:
-        run_collection(include_live_snapshot=False)
+        res = run_collection(include_live_snapshot=False)
+        if res.get("status") != "SUCCESS":
+            ret = 1
     else:
-        run_collection()
+        res = run_collection()
+        if res.get("status") != "SUCCESS":
+            ret = 1
+    sys.exit(ret)

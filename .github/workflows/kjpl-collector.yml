@@ -4,6 +4,7 @@ on:
   schedule:
     # All times in UTC (IST = UTC + 5:30)
     # Pipeline A: Scheduled MJDTA Reference Price Collector (~twice daily IST windows)
+    # Target publication windows: 09:30-11:30 AM IST and 05:00-06:30 PM IST
     - cron: '38 0 * * *'   # Morning early backup
     - cron: '8 1 * * *'    # Morning primary
     - cron: '38 1 * * *'   # Morning late backup
@@ -11,6 +12,10 @@ on:
     - cron: '38 7 * * *'   # Evening early backup
     - cron: '8 8 * * *'    # Evening primary
     - cron: '38 8 * * *'   # Evening late backup
+
+    # Proposed consolidated schedule for P0.4:
+    # '30 4,6,8,10,12 * * 1-6' (UTC) — Monday through Saturday across Indian trading hours (10:00 to 18:00 IST).
+    # NOTE: Workflow remains disabled_manually on GitHub Actions pending explicit approval.
 
   workflow_dispatch:
 
@@ -28,17 +33,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
 
       - name: Install collector dependencies
         run: |
           python -m pip install --upgrade pip --retries 5 --timeout 30
-          pip install --retries 5 --timeout 30 requests beautifulsoup4 lxml sqlalchemy pydantic psycopg[binary] alembic numpy pandas scipy
+          pip install --retries 5 --timeout 30 -r backend/requirements.txt
 
       - name: Verify Neon schema revision using restricted runtime credentials
         env:
@@ -54,9 +61,18 @@ jobs:
           DATABASE_URL: ${{ secrets.NEON_RUNTIME_DATABASE_URL }}
           REQUIRE_POSTGRES: "true"
           DB_USE_NULLPOOL: "true"
-          ENABLE_CSV_MIRROR: "false"
+          ENABLE_CSV_MIRROR: "true"
         run: |
           PYTHONPATH=backend python scripts/collect_kjpl_csv.py --mjdta-only
+
+      - name: Pipeline B — 5-City Retail Matrix & KJPL Spot Snapshot
+        env:
+          DATABASE_URL: ${{ secrets.NEON_RUNTIME_DATABASE_URL }}
+          REQUIRE_POSTGRES: "true"
+          DB_USE_NULLPOOL: "true"
+          ENABLE_CSV_MIRROR: "true"
+        run: |
+          PYTHONPATH=backend python scripts/collect_kjpl_csv.py --snapshot-only
 
       - name: Run Prospective Shadow Forecast on Latest MJDTA Origin
         env:
@@ -66,12 +82,23 @@ jobs:
         run: |
           PYTHONPATH=backend python scripts/run_prospective_forecast.py
 
-      - name: Interim 5-City One-Time Snapshot (until Oracle continuous worker is active)
-        if: vars.ORACLE_WORKER_ACTIVE != 'true'
+      - name: Verify Bullion Collection Integrity & Neon Read-Back
         env:
           DATABASE_URL: ${{ secrets.NEON_RUNTIME_DATABASE_URL }}
           REQUIRE_POSTGRES: "true"
           DB_USE_NULLPOOL: "true"
-          ENABLE_CSV_MIRROR: "false"
         run: |
-          PYTHONPATH=backend python scripts/collect_kjpl_csv.py --snapshot-only
+          PYTHONPATH=backend python scripts/verify_kjpl_collection.py
+
+      - name: Upload Collection Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kjpl-collection-artifacts-${{ github.run_id }}
+          retention-days: 14
+          path: |
+            data/reports/collection_summary.json
+            data/kjpl/kjpl_rates.csv
+            data/kjpl/kjpl_city_rates.csv
+            docs/operations/daily_research_report.json
+            docs/operations/DAILY_RESEARCH_REPORT.md

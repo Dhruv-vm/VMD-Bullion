@@ -110,9 +110,7 @@ def verify_neon() -> bool:
         if not fetched:
             print("❌ Write/read-back verification failed.")
             return False
-        session.delete(fetched)
-        session.commit()
-        print("✅ Transactional write, read-back, and cleanup succeeded cleanly.")
+        print("✅ Transactional write and read-back succeeded cleanly (append-only ledger enforced).")
 
     print("=" * 75)
     print(" 🎉 NEON POSTGRESQL READY FOR PRODUCTION")

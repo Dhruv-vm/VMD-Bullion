@@ -46,7 +46,7 @@ def non_persistent_test_db(tmp_path: Path, monkeypatch):
 
 
 def test_req1_all_five_city_feeds_served_without_database_writes(non_persistent_test_db):
-    """Requirement D.1: All five city feeds (IDs 48-52) are served without database writes."""
+    """P0.3: All five city feeds (IDs 48-52) are validated and persisted to database and cache."""
     session, _ = non_persistent_test_db
 
     feed_txt = "\n".join([
@@ -61,21 +61,21 @@ def test_req1_all_five_city_feeds_served_without_database_writes(non_persistent_
     res = persist_parsed_payload(payload, session=session, source_key="KJPL_LIVE", mirror_csv=False)
 
     assert res["status"] == "SUCCESS"
-    assert res["records_inserted"] == 0
+    assert res["records_inserted"] == 5
 
-    # ZERO database writes for the 5 cities in both tables
+    # Exactly 5 database writes for the 5 cities in both tables
     city_codes = ["CHENNAI", "BENGALURU", "MUMBAI", "COIMBATORE", "HYDERABAD"]
     obs_count = session.query(BullionRateObservation).filter(
         BullionRateObservation.city_code.in_(city_codes),
         BullionRateObservation.product_id == "GOLD_100G_999",
     ).count()
-    assert obs_count == 0
+    assert obs_count == 5
 
     latest_count = session.query(BullionLatestRate).filter(
         BullionLatestRate.city_code.in_(city_codes),
         BullionLatestRate.product_id == "GOLD_100G_999",
     ).count()
-    assert latest_count == 0
+    assert latest_count == 5
 
     # Served through API
     resp = client.get("/api/bullion/city-rates")
@@ -91,7 +91,7 @@ def test_req1_all_five_city_feeds_served_without_database_writes(non_persistent_
 
 
 def test_req2_id_47_continues_to_persist(non_persistent_test_db):
-    """Requirement D.2: KJPL ALL_INDIA ID 47 continues to persist to database."""
+    """Requirement D.2: KJPL ALL_INDIA ID 47 and city feeds continue to persist to database."""
     session, _ = non_persistent_test_db
 
     feed_txt = "\n".join([
@@ -102,8 +102,8 @@ def test_req2_id_47_continues_to_persist(non_persistent_test_db):
     payload = parse_kjpl_live_feed(feed_txt)
     res = persist_parsed_payload(payload, session=session, source_key="KJPL_LIVE", mirror_csv=False)
 
-    # Exactly 1 record inserted (ID 47)
-    assert res["records_inserted"] == 1
+    # Exactly 2 records inserted (ID 47 and ID 48)
+    assert res["records_inserted"] == 2
 
     # ID 47 is present in database tables
     obs_47 = session.query(BullionRateObservation).filter_by(
@@ -117,9 +117,9 @@ def test_req2_id_47_continues_to_persist(non_persistent_test_db):
     ).one()
     assert float(latest_47.latest_price) == 14521.50
 
-    # ID 48 is NOT in database
-    assert session.query(BullionRateObservation).filter_by(source_product_id="48").count() == 0
-    assert session.query(BullionLatestRate).filter_by(city_code="CHENNAI", product_id="GOLD_100G_999").count() == 0
+    # ID 48 IS also in database
+    assert session.query(BullionRateObservation).filter_by(source_product_id="48").count() == 1
+    assert session.query(BullionLatestRate).filter_by(city_code="CHENNAI", product_id="GOLD_100G_999").count() == 1
 
 
 def test_req3_other_kjpl_products_continue_to_persist(non_persistent_test_db):
@@ -139,8 +139,8 @@ def test_req3_other_kjpl_products_continue_to_persist(non_persistent_test_db):
     payload = parse_kjpl_live_feed(feed_txt)
     res = persist_parsed_payload(payload, session=session, source_key="KJPL_LIVE", mirror_csv=False)
 
-    # 6 persistent items: ID 47, GOLDDEC, SILVERDEC, SPOT-GOLD, SPOT-SILVER, SPOT-INR
-    assert res["records_inserted"] == 6
+    # 7 persistent items: ID 47, ID 48, GOLDDEC, SILVERDEC, SPOT-GOLD, SPOT-SILVER, SPOT-INR
+    assert res["records_inserted"] == 7
 
     # Verify each non-city product persisted
     for pid in [
@@ -155,6 +155,11 @@ def test_req3_other_kjpl_products_continue_to_persist(non_persistent_test_db):
         assert lr.validation_status == "VALID"
         obs = session.query(BullionRateObservation).filter_by(product_id=pid).one()
         assert obs.validation_status == "VALID"
+
+    # Verify ID 48 persisted
+    lr_48 = session.query(BullionLatestRate).filter_by(city_code="CHENNAI", product_id="GOLD_100G_999").one()
+    assert lr_48.validation_status == "VALID"
+    assert session.query(BullionRateObservation).filter_by(source_product_id="48").count() == 1
 
 
 def test_req4_mjdta_and_lbma_persistence_remains_unchanged(non_persistent_test_db):

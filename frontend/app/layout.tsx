@@ -17,7 +17,11 @@ export const metadata: Metadata = {
   description: "Live 5-City Indian Gold & Silver Rates, KJPL Physical Benchmarks, International COMEX Parity & Bullion Analytics",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html
       lang="en"

@@ -2,7 +2,11 @@ name: News Data Collector
 
 on:
   schedule:
+    # 4-times daily news collector: 03:00, 09:00, 15:00, 21:00 UTC
+    # NOTE: Workflow remains disabled_manually on GitHub Actions per P0.4 policy
+    # pending RSS rate-limit, quota and source reliability audits.
     - cron: '0 3,9,15,21 * * *'
+
   workflow_dispatch:
 
 concurrency:
@@ -19,17 +23,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v7
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: 'backend/requirements.txt'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip --retries 5 --timeout 30
-          pip install --retries 5 --timeout 30 requests beautifulsoup4 pydantic lxml sqlalchemy psycopg[binary] alembic
+          pip install --retries 5 --timeout 30 -r backend/requirements.txt
 
       - name: Verify Neon schema revision using restricted runtime credentials
         env:
