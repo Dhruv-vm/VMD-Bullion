@@ -217,6 +217,7 @@ class CityLiveRateCache:
                 "source_published_at": pub_iso,
                 "source_updated_time": formatted_src_time,
                 "observed_at": obs_iso,
+                "last_collected_at": obs_iso,
                 "last_verified_at": obs_iso,
                 "freshness": freshness["status"],
                 "age_hours": freshness["age_hours"],

@@ -107,13 +107,29 @@ def get_freshness_details(
     rate_type: str = "RETAIL",
     market_status_override: str | None = None,
     source_unavailable: bool = False,
+    is_warming_up: bool = False,
+    is_reconnecting: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate honest freshness state tailored to feed cadence:
       - MJDTA_BENCHMARK (twice daily): FRESH <16h, DELAYED 16-36h, STALE >36h
       - Live feeds (KJPL_LIVE / RETAIL / WHOLESALE): LIVE <120s, FRESH <4h, DELAYED 4-24h, STALE >24h
-    Respects market-closed and source-unavailable states without fabricating activity.
+    Respects warming-up, reconnecting, market-closed and source-unavailable states without fabricating activity.
     """
+    if is_warming_up:
+        return {
+            "status": "WARMING_UP",
+            "age_hours": None,
+            "age_seconds": None,
+            "age_display": "Warming up",
+        }
+    if is_reconnecting:
+        return {
+            "status": "RECONNECTING",
+            "age_hours": None,
+            "age_seconds": None,
+            "age_display": "Reconnecting",
+        }
     if source_unavailable:
         return {
             "status": "SOURCE_UNAVAILABLE",
@@ -209,8 +225,10 @@ def _get_latest_kjpl_from_db() -> dict[str, Any] | None:
             "silver_mjdta": silver,
             "published_time": pub_dt.astimezone(IST).strftime("%d-%m-%Y %I:%M %p IST") if pub_dt else "Unverified date",
             "source_published_at": pub_dt.isoformat() if pub_dt else None,
-            "observed_at": coll_dt.isoformat(),
-            "last_verified_at": gold_row.last_verified_at.isoformat(),
+            "observed_at": coll_dt.isoformat() if coll_dt else (pub_dt.isoformat() if pub_dt else None),
+            "last_collected_at": coll_dt.isoformat() if coll_dt else None,
+            "last_verified_at": gold_row.last_verified_at.isoformat() if gold_row.last_verified_at else None,
+            "last_successful_update": pub_dt.isoformat() if pub_dt else (coll_dt.isoformat() if coll_dt else None),
             "currency": "INR",
             "unit": "gram",
             "change_24h_inr": round(change_inr, 2),
