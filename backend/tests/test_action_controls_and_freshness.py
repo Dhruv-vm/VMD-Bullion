@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.data_service import get_freshness_details
@@ -67,6 +67,109 @@ def test_freshness_evaluation_matrix():
     res = get_freshness_details(now, is_reconnecting=True)
     assert res["status"] == "RECONNECTING"
     assert res["age_display"] == "Reconnecting"
+
+
+def test_freshness_boundary_values_and_cadence_intervals():
+    """Verify exact boundary values and interval behavior for benchmark and live feeds without clock jitter."""
+    fixed_now = datetime(2026, 11, 28, 12, 0, 0, tzinfo=timezone.utc)
+
+    with patch("app.services.data_service.datetime") as mock_dt:
+        mock_dt.now.return_value = fixed_now
+        mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+
+        # --- BENCHMARK CADENCE (Twice-daily, 16h / 36h) ---
+        # Boundary: Exactly 16.0 hours -> FRESH
+        at_16h = fixed_now - timedelta(hours=16.0)
+        res = get_freshness_details(at_16h, rate_type="MJDTA_BENCHMARK")
+        assert res["status"] == "FRESH"
+        assert res["age_hours"] == 16.0
+
+        # Intermediate interval: 16.01 hours -> DELAYED (Never Connected)
+        at_16_01h = fixed_now - timedelta(hours=16.01)
+        res = get_freshness_details(at_16_01h, rate_type="MJDTA_BENCHMARK")
+        assert res["status"] == "DELAYED"
+        assert res["age_hours"] == 16.01
+
+        # Boundary: Exactly 36.0 hours -> DELAYED
+        at_36h = fixed_now - timedelta(hours=36.0)
+        res = get_freshness_details(at_36h, rate_type="MJDTA_BENCHMARK")
+        assert res["status"] == "DELAYED"
+        assert res["age_hours"] == 36.0
+
+        # Beyond 36 hours: 36.01 hours -> STALE
+        at_36_01h = fixed_now - timedelta(hours=36.01)
+        res = get_freshness_details(at_36_01h, rate_type="MJDTA_BENCHMARK")
+        assert res["status"] == "STALE"
+        assert res["age_hours"] == 36.01
+
+        # --- LIVE FEED CADENCE (Streaming tick 120s, intraday 4h / 24h) ---
+        # Boundary: Exactly 120 seconds -> LIVE
+        at_120s = fixed_now - timedelta(seconds=120)
+        res = get_freshness_details(at_120s, rate_type="RETAIL")
+        assert res["status"] == "LIVE"
+
+        # Beyond 120s: 121 seconds -> FRESH
+        at_121s = fixed_now - timedelta(seconds=121)
+        res = get_freshness_details(at_121s, rate_type="RETAIL")
+        assert res["status"] == "FRESH"
+
+        # Boundary: Exactly 4.0 hours -> FRESH
+        at_4h = fixed_now - timedelta(hours=4.0)
+        res = get_freshness_details(at_4h, rate_type="RETAIL")
+        assert res["status"] == "FRESH"
+        assert res["age_hours"] == 4.0
+
+        # Intermediate interval: 4.01 hours -> DELAYED (Never Connected)
+        at_4_01h = fixed_now - timedelta(hours=4.01)
+        res = get_freshness_details(at_4_01h, rate_type="RETAIL")
+        assert res["status"] == "DELAYED"
+        assert res["age_hours"] == 4.01
+
+        # Boundary: Exactly 24.0 hours -> DELAYED
+        at_24h = fixed_now - timedelta(hours=24.0)
+        res = get_freshness_details(at_24h, rate_type="RETAIL")
+        assert res["status"] == "DELAYED"
+        assert res["age_hours"] == 24.0
+
+        # Beyond 24 hours: 24.01 hours -> STALE
+        at_24_01h = fixed_now - timedelta(hours=24.01)
+        res = get_freshness_details(at_24_01h, rate_type="RETAIL")
+        assert res["status"] == "STALE"
+        assert res["age_hours"] == 24.01
+
+        # --- MISSING TIMESTAMP ---
+        res_none = get_freshness_details(None, rate_type="MJDTA_BENCHMARK")
+        assert res_none["status"] == "STALE"
+        assert res_none["age_display"] == "Unknown timestamp"
+
+    # --- SYSTEM STATUS INTERMEDIATE SAFEGUARDS ---
+    # Ensure DELAYED observations are NEVER classified as Connected in system_status
+    now = datetime.now(timezone.utc)
+    delayed_benchmark_rate = [
+        {
+            "city_code": "CHENNAI",
+            "city_display_name": "Chennai",
+            "product_id": "MJDTA_GOLD_22K",
+            "product_name": "MJDTA Gold 22K Benchmark",
+            "latest_price": 11540.0,
+            "per_gram_price": 11540.0,
+            "unit": "1g",
+            "purity": 0.9160,
+            "change_inr": 0.0,
+            "change_pct": 0.0,
+            "validation_status": "VALID",
+            "rate_type": "MJDTA_BENCHMARK",
+            "freshness": "DELAYED",
+            "age_display": "22h ago",
+            "source_published_at": (now - timedelta(hours=22)).isoformat(),
+            "source_updated_time": "27 Nov 03:00 PM IST",
+            "observed_at": (now - timedelta(hours=22)).isoformat(),
+            "last_collected_at": (now - timedelta(hours=22)).isoformat(),
+        }
+    ]
+    summary_delayed = get_bullion_summary(all_rates=delayed_benchmark_rate)
+    assert summary_delayed["system_status"] == "Stale"
+    assert summary_delayed["system_status"] != "Connected"
 
 
 def test_no_timestamp_fabrication_in_serialization():

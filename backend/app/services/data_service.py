@@ -154,18 +154,27 @@ def get_freshness_details(
     if market_status_override in ("SUNDAY_CLOSED", "WEEKEND_CLOSED", "CLOSED"):
         status = "MARKET_CLOSED"
     elif rate_type in ("MJDTA_BENCHMARK", "LBMA_FIX"):
-        if age_hours < MJDTA_FRESH_HOURS:
+        # Twice-daily benchmark intervals:
+        # [0, 16.0h]: FRESH (covers morning/afternoon fix cadence and overnight gap)
+        # (16.0h, 36.0h]: DELAYED (missed single fix window; never classified as Connected)
+        # >36.0h: STALE (obsolete market quote across multiple sessions/weekend)
+        if age_hours <= MJDTA_FRESH_HOURS:
             status = "FRESH"
-        elif age_hours < MJDTA_DELAYED_HOURS:
+        elif age_hours <= MJDTA_DELAYED_HOURS:
             status = "DELAYED"
         else:
             status = "STALE"
     else:
+        # Live streaming and intraday feed intervals:
+        # [0, 120s]: LIVE (real-time stream quote)
+        # (120s, 4.0h]: FRESH (active intraday reference quote)
+        # (4.0h, 24.0h]: DELAYED (missed intraday ticks; never classified as Connected)
+        # >24.0h: STALE (multi-day obsolete quote)
         if age_seconds <= LIVE_FEED_LIVE_SECONDS:
             status = "LIVE"
-        elif age_hours < LIVE_FEED_FRESH_HOURS:
+        elif age_hours <= LIVE_FEED_FRESH_HOURS:
             status = "FRESH"
-        elif age_hours < LIVE_FEED_DELAYED_HOURS:
+        elif age_hours <= LIVE_FEED_DELAYED_HOURS:
             status = "DELAYED"
         else:
             status = "STALE"

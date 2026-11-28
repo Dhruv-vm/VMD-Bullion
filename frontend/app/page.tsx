@@ -4,6 +4,14 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { apiUrl, BullionDashboardPayload, fetchBullionDashboard, openBullionEventStream } from "../lib/api";
 import { KjplLiveDeskPanel } from "../components/bullion/KjplLiveDeskPanel";
 import { MjdtaPredictionPanel } from "../components/bullion/MjdtaPredictionPanel";
+import {
+  loadStoredPreferences,
+  saveStoredPreferences,
+  CitySelectionCoordinator,
+  validateHoldingForm,
+  validateAlertForm,
+  formatSyncNotice,
+} from "../lib/terminal-actions";
 
 // =============================================================================
 // TYPES & INTERFACES
@@ -289,12 +297,10 @@ type TerminalTab =
 
 export default function VMDBullionDashboard() {
   const [activeTab, setActiveTab] = useState<TerminalTab>("overview");
-  const [selectedCity, setSelectedCity] = useState<string>(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("vmd_selected_city") || "CHENNAI";
-    }
-    return "CHENNAI";
-  });
+
+  // Load persistent non-sensitive preferences (selectedCity, userId) safely; API Key is NEVER stored
+  const [initialPrefs] = useState(() => loadStoredPreferences());
+  const [selectedCity, setSelectedCity] = useState<string>(initialPrefs.selectedCity);
 
   // Bullion data states
   const [bullionSummary, setBullionSummary] = useState<BullionSummaryResponse | null>(null);
@@ -322,18 +328,9 @@ export default function VMDBullionDashboard() {
   const [streamStatus, setStreamStatus] = useState<{ connected: boolean; degraded?: boolean; message?: string }>({
     connected: false,
   });
-  const [userId, setUserId] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("vmd_user_id") || "owner";
-    }
-    return "owner";
-  });
-  const [apiKey, setApiKey] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("vmd_api_key") || "";
-    }
-    return "";
-  });
+  const [userId, setUserId] = useState(initialPrefs.userId);
+  // Session-only API Key: Never stored in localStorage or disk to prevent XSS exfiltration
+  const [apiKey, setApiKey] = useState("");
   const [isNewsLoading, setIsNewsLoading] = useState(false);
   const [isSubmittingHolding, setIsSubmittingHolding] = useState(false);
   const [holdingError, setHoldingError] = useState<string | null>(null);
@@ -343,14 +340,13 @@ export default function VMDBullionDashboard() {
   const [deletingAlertId, setDeletingAlertId] = useState<number | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
 
+  // City request coordinator to prevent out-of-order race conditions
+  const [cityCoordinator] = useState(() => new CitySelectionCoordinator(initialPrefs.selectedCity));
+
   const handleSavePreferences = () => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("vmd_selected_city", selectedCity);
-      localStorage.setItem("vmd_user_id", userId);
-      localStorage.setItem("vmd_api_key", apiKey);
-      setSettingsNotice("Terminal preferences saved to browser storage.");
-      setTimeout(() => setSettingsNotice(null), 4000);
-    }
+    const res = saveStoredPreferences({ selectedCity, userId });
+    setSettingsNotice(res.message);
+    setTimeout(() => setSettingsNotice(null), 4000);
   };
 
   // Modals
@@ -496,9 +492,14 @@ export default function VMDBullionDashboard() {
   }, [newsWindowHours, fetchNewsData]);
 
   // City selector handler that updates selection and immediately loads city dashboard
+  // Uses CitySelectionCoordinator to prevent out-of-order race conditions
   const handleSelectCity = (cityCode: string) => {
     setSelectedCity(cityCode);
-    void fetchBullionDashboard(cityCode, 30).then((dash) => applyDashboardPayload(dash)).catch(() => {});
+    void cityCoordinator.selectCity(
+      cityCode,
+      fetchBullionDashboard,
+      (dash) => applyDashboardPayload(dash)
+    );
   };
 
   // Refresh handler across entire terminal
@@ -515,15 +516,7 @@ export default function VMDBullionDashboard() {
       const summary = dash?.summary as BullionSummaryResponse | undefined;
       const status = summary?.system_status || "Connected";
       const lastObs = summary?.last_successful_observation?.updated_time_ist || summary?.last_successful_update_ist;
-      if (status === "Stale") {
-        setRefreshNotice(`Terminal synced: Database connected (Quotes from ${lastObs || "prior session"}, Stale).`);
-      } else if (status === "Connected") {
-        setRefreshNotice("Terminal synced: Real-time database state verified.");
-      } else if (status === "Unavailable") {
-        setRefreshNotice("Terminal synced: Bullion market quotes currently unavailable.");
-      } else {
-        setRefreshNotice(`Terminal synced: System state ${status}.`);
-      }
+      setRefreshNotice(formatSyncNotice(status, lastObs));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Database or backend unavailable.";
       setRefreshNotice(`Sync failed: ${msg}`);
@@ -533,61 +526,22 @@ export default function VMDBullionDashboard() {
     }
   };
 
-  // Helper to normalize purity input from jewelers/traders
-  const normalizePurityInput = (val: string): { purity: number | null; error: string | null } => {
-    let num = parseFloat(val);
-    if (isNaN(num) || num <= 0) {
-      return { purity: null, error: "Purity must be a positive number." };
-    }
-    if (num === 22 || num === 916) num = 0.916;
-    else if (num === 24 || num === 999) num = 0.999;
-    else if (num === 18 || num === 750) num = 0.750;
-    else if (num > 1.0 && num <= 1000) num = Math.round((num / 1000) * 10000) / 10000;
-    if (num <= 0 || num > 1.0) {
-      return { purity: null, error: "Purity must be between 0.0 and 1.0 (e.g. 0.916 for 22K, 0.999 for 24K)." };
-    }
-    return { purity: num, error: null };
-  };
-
   // Holdings Handlers
   const handleCreateHolding = async (e: React.FormEvent) => {
     e.preventDefault();
     setHoldingError(null);
-    const { purity, error: purityErr } = normalizePurityInput(holdingForm.purity);
-    if (purityErr || purity === null) {
-      setHoldingError(purityErr || "Invalid purity");
-      return;
-    }
-
-    const grossWeight = parseFloat(holdingForm.gross_weight);
-    if (isNaN(grossWeight) || grossWeight <= 0) {
-      setHoldingError("Gross weight must be greater than 0.");
-      return;
-    }
-
-    const qty = parseInt(holdingForm.quantity, 10);
-    if (isNaN(qty) || qty < 1) {
-      setHoldingError("Quantity must be at least 1.");
+    const validation = validateHoldingForm(holdingForm);
+    if (!validation.valid) {
+      setHoldingError(validation.error);
       return;
     }
 
     setIsSubmittingHolding(true);
     try {
-      const payload = {
-        metal_type: holdingForm.metal_type,
-        product_name: holdingForm.product_name.trim(),
-        purity,
-        gross_weight: grossWeight,
-        weight_unit: holdingForm.weight_unit || "g",
-        quantity: qty,
-        acquisition_date: holdingForm.acquisition_date || null,
-        acquisition_cost_inr: holdingForm.acquisition_cost_inr ? parseFloat(holdingForm.acquisition_cost_inr) : null,
-        notes: holdingForm.notes.trim() || null,
-      };
       const res = await fetch(apiUrl("/api/portfolio/holdings"), {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsAddHoldingOpen(false);
@@ -609,42 +563,18 @@ export default function VMDBullionDashboard() {
     e.preventDefault();
     if (!editingHolding) return;
     setHoldingError(null);
-
-    const { purity, error: purityErr } = normalizePurityInput(holdingForm.purity);
-    if (purityErr || purity === null) {
-      setHoldingError(purityErr || "Invalid purity");
-      return;
-    }
-
-    const grossWeight = parseFloat(holdingForm.gross_weight);
-    if (isNaN(grossWeight) || grossWeight <= 0) {
-      setHoldingError("Gross weight must be greater than 0.");
-      return;
-    }
-
-    const qty = parseInt(holdingForm.quantity, 10);
-    if (isNaN(qty) || qty < 1) {
-      setHoldingError("Quantity must be at least 1.");
+    const validation = validateHoldingForm(holdingForm);
+    if (!validation.valid) {
+      setHoldingError(validation.error);
       return;
     }
 
     setIsSubmittingHolding(true);
     try {
-      const payload = {
-        metal_type: holdingForm.metal_type,
-        product_name: holdingForm.product_name.trim(),
-        purity,
-        gross_weight: grossWeight,
-        weight_unit: holdingForm.weight_unit || "g",
-        quantity: qty,
-        acquisition_date: holdingForm.acquisition_date || null,
-        acquisition_cost_inr: holdingForm.acquisition_cost_inr ? parseFloat(holdingForm.acquisition_cost_inr) : null,
-        notes: holdingForm.notes.trim() || null,
-      };
       const res = await fetch(apiUrl(`/api/portfolio/holdings/${editingHolding.id}`), {
         method: "PUT",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsEditHoldingOpen(false);
@@ -705,24 +635,18 @@ export default function VMDBullionDashboard() {
   const handleCreateAlert = async (e: React.FormEvent) => {
     e.preventDefault();
     setAlertError(null);
-    const thresh = parseFloat(alertForm.threshold);
-    if (isNaN(thresh) || thresh <= 0) {
-      setAlertError("Threshold must be a positive number.");
+    const validation = validateAlertForm(alertForm);
+    if (!validation.valid) {
+      setAlertError(validation.error);
       return;
     }
 
     setIsSubmittingAlert(true);
     try {
-      const payload = {
-        alert_type: alertForm.alert_type,
-        target_metric: alertForm.target_metric,
-        threshold: thresh,
-        notes: alertForm.notes.trim() || null,
-      };
       const res = await fetch(apiUrl("/api/alerts"), {
         method: "POST",
         headers: getHeaders(),
-        body: JSON.stringify(payload),
+        body: JSON.stringify(validation.payload),
       });
       if (res.ok) {
         setIsAddAlertOpen(false);
@@ -2552,10 +2476,13 @@ export default function VMDBullionDashboard() {
                     </div>
 
                     <div>
-                      <label className="block text-[#8B98A5] mb-1">OPTIONAL API AUTHORIZATION KEY</label>
+                      <label className="block text-[#8B98A5] mb-1">
+                        OPTIONAL API AUTHORIZATION KEY{" "}
+                        <span className="text-[10px] text-amber-400/90 font-mono">(Session-only; never stored in localStorage)</span>
+                      </label>
                       <input
                         type="password"
-                        placeholder="Bearer token if configured"
+                        placeholder="Bearer token if configured (held in memory only)"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         className="w-full bg-[#0D1218] border border-[#25313D] rounded p-2 text-white"
